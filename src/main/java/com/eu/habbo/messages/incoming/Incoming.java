@@ -454,6 +454,24 @@ public class Incoming {
     public static final int RejectQuestEvent = 2397;
     public static final int OpenQuestTrackerEvent = 2750;
 
+    // Original Shockwave BattleBall (protocol version 1). These headers are intentionally
+    // separate from the modern Battle Banzai feature and are documented in BATTLEBALL_PROTOCOL.md.
+    public static final int BattleBallGetInstanceListEvent = 7500;
+    public static final int BattleBallObserveEvent = 7501;
+    public static final int BattleBallUnobserveEvent = 7502;
+    public static final int BattleBallInitiateCreateEvent = 7503;
+    public static final int BattleBallSetGameParametersEvent = 7504;
+    public static final int BattleBallDeleteEvent = 7505;
+    public static final int BattleBallInitiateJoinEvent = 7506;
+    public static final int BattleBallSetJoinParametersEvent = 7507;
+    public static final int BattleBallLeaveEvent = 7508;
+    public static final int BattleBallKickEvent = 7509;
+    public static final int BattleBallWatchEvent = 7510;
+    public static final int BattleBallStartEvent = 7511;
+    public static final int BattleBallGameEvent = 7512;
+    public static final int BattleBallRejoinEvent = 7513;
+    public static final int BattleBallRequestFullStatusEvent = 7514;
+
     public static final int UNKNOWN_SNOWSTORM_6000 = 6000;
     public static final int UNKNOWN_SNOWSTORM_6001 = 6001;
     public static final int UNKNOWN_SNOWSTORM_6002 = 6002;

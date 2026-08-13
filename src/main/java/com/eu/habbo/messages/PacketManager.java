@@ -25,6 +25,7 @@ import com.eu.habbo.messages.incoming.friends.*;
 import com.eu.habbo.messages.incoming.gamecenter.*;
 import com.eu.habbo.messages.incoming.games.gamehall.GameBoardMoveMessageEvent;
 import com.eu.habbo.messages.incoming.games.gamehall.RequestGamehallLeaderboardMessageEvent;
+import com.eu.habbo.messages.incoming.games.battleball.*;
 import com.eu.habbo.messages.incoming.guardians.ChatReviewGuideDecidesOnOfferMessageEvent;
 import com.eu.habbo.messages.incoming.guardians.ChatReviewGuideDetachedMessageEvent;
 import com.eu.habbo.messages.incoming.guardians.ChatReviewGuideVoteMessageEvent;
@@ -138,6 +139,7 @@ public class PacketManager {
         this.registerCrafting();
         this.registerCamera();
         this.registerGameCenter();
+        this.registerBattleBall();
         this.registerRewardTrack();
         this.registerHabbicons();
         this.registerQuests();
@@ -169,6 +171,24 @@ public class PacketManager {
         }
 
         this.incoming.putIfAbsent(header, handler);
+    }
+
+    private void registerBattleBall() throws Exception {
+        this.registerHandler(Incoming.BattleBallGetInstanceListEvent, BattleBallGetInstanceListEvent.class);
+        this.registerHandler(Incoming.BattleBallObserveEvent, BattleBallObserveEvent.class);
+        this.registerHandler(Incoming.BattleBallUnobserveEvent, BattleBallUnobserveEvent.class);
+        this.registerHandler(Incoming.BattleBallInitiateCreateEvent, BattleBallInitiateCreateEvent.class);
+        this.registerHandler(Incoming.BattleBallSetGameParametersEvent, BattleBallSetGameParametersEvent.class);
+        this.registerHandler(Incoming.BattleBallDeleteEvent, BattleBallDeleteEvent.class);
+        this.registerHandler(Incoming.BattleBallInitiateJoinEvent, BattleBallInitiateJoinEvent.class);
+        this.registerHandler(Incoming.BattleBallSetJoinParametersEvent, BattleBallSetJoinParametersEvent.class);
+        this.registerHandler(Incoming.BattleBallLeaveEvent, BattleBallLeaveEvent.class);
+        this.registerHandler(Incoming.BattleBallKickEvent, BattleBallKickEvent.class);
+        this.registerHandler(Incoming.BattleBallWatchEvent, BattleBallWatchEvent.class);
+        this.registerHandler(Incoming.BattleBallStartEvent, BattleBallStartEvent.class);
+        this.registerHandler(Incoming.BattleBallGameEvent, BattleBallGameEvent.class);
+        this.registerHandler(Incoming.BattleBallRejoinEvent, BattleBallRejoinEvent.class);
+        this.registerHandler(Incoming.BattleBallRequestFullStatusEvent, BattleBallRequestFullStatusEvent.class);
     }
 
     public void registerCallable(Integer header, ICallable callable) {

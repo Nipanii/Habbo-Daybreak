@@ -9,6 +9,7 @@ import com.eu.habbo.habbohotel.catalog.CatalogManager;
 import com.eu.habbo.habbohotel.commands.CommandHandler;
 import com.eu.habbo.habbohotel.crafting.CraftingManager;
 import com.eu.habbo.habbohotel.games.gamehall.leaderboard.GamehallLeaderboardManager;
+import com.eu.habbo.habbohotel.games.battleball.BattleBallManager;
 import com.eu.habbo.habbohotel.habbicons.HabbiconManager;
 import com.eu.habbo.habbohotel.guides.GuideManager;
 import com.eu.habbo.habbohotel.guilds.GuildManager;
@@ -67,6 +68,7 @@ public class GameEnvironment {
     private CalendarManager calendarManager;
     private RoomChatBubbleManager roomChatBubbleManager;
     private GamehallLeaderboardManager gamehallLeaderboardManager;
+    private BattleBallManager battleBallManager;
     private HabbiconManager habbiconManager;
     private RewardTrackManager rewardTrackManager;
     private QuestManager questManager;
@@ -99,6 +101,7 @@ public class GameEnvironment {
         this.calendarManager = new CalendarManager();
         this.roomChatBubbleManager = new RoomChatBubbleManager();
         this.gamehallLeaderboardManager = new GamehallLeaderboardManager();
+        this.battleBallManager = new BattleBallManager();
         this.habbiconManager = new HabbiconManager();
         this.rewardTrackManager = new RewardTrackManager();
         this.questManager = new QuestManager();
@@ -142,6 +145,7 @@ public class GameEnvironment {
         this.subscriptionManager.dispose();
         this.calendarManager.dispose();
         this.gamehallLeaderboardManager.dispose();
+        this.battleBallManager.dispose();
         this.rewardTrackManager.dispose();
         this.habbiconManager.dispose();
         LOGGER.info("GameEnvironment -> Disposed!");
@@ -253,6 +257,10 @@ public class GameEnvironment {
 
     public GamehallLeaderboardManager getGamehallLeaderboardManager() {
         return this.gamehallLeaderboardManager;
+    }
+
+    public BattleBallManager getBattleBallManager() {
+        return this.battleBallManager;
     }
 
     public HabbiconManager getHabbiconManager() {
