@@ -13,4 +13,5 @@ public record BattleBallUpdate(
         List<BattleBallTile> priorityTiles,
         List<BattleBallTile> fillTiles,
         Map<Integer, Integer> scores,
-        List<BattleBallEvent> events) {}
+        List<BattleBallEvent> events,
+        boolean boardReset) {}

@@ -591,12 +591,11 @@ public class Outgoing {
     public final static int WeeklyGameRewardWinnersMessageComposer = 3097;
     public final static int WeeklyCompetitiveFriendsLeaderboardMessageComposer = 3560;
 
-    // Original Shockwave BattleBall (protocol version 1). Not Battle Banzai.
+    // Original Shockwave BattleBall (protocol version 2). Not Battle Banzai.
     public static final int BattleBallLoungeInfoComposer = 7600;
     public static final int BattleBallInstanceListComposer = 7601;
     public static final int BattleBallGameInstanceComposer = 7602;
     public static final int BattleBallInstanceNotAvailableComposer = 7603;
-    public static final int BattleBallGameParametersComposer = 7604;
     public static final int BattleBallCreateFailedComposer = 7605;
     public static final int BattleBallGameDeletedComposer = 7606;
     public static final int BattleBallJoinParametersComposer = 7607;
@@ -606,13 +605,14 @@ public class Outgoing {
     public static final int BattleBallStartFailedComposer = 7611;
     public static final int BattleBallFullGameStatusComposer = 7612;
     public static final int BattleBallGameStatusComposer = 7613;
-    public static final int BattleBallPlayerRejoinedComposer = 7614;
+    public static final int BattleBallPlayerRemovedComposer = 7614;
     public static final int BattleBallGameStartComposer = 7615;
     public static final int BattleBallGameEndComposer = 7616;
-    public static final int BattleBallGameResetComposer = 7617;
-    public static final int BattleBallGamePlayerInfoComposer = 7618;
+    public static final int BattleBallSpectatorCountComposer = 7617;
     public static final int BattleBallIdleWarningComposer = 7619;
     public static final int BattleBallSkillLevelChangedComposer = 7620;
+    public static final int BattleBallTicketBalanceComposer = 7621;
+    public static final int BattleBallTicketPurchaseResultComposer = 7622;
 
 
     public static final int SnowStormGameStartedComposer = 5000;

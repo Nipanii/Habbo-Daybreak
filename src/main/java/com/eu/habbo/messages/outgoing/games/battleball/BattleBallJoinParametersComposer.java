@@ -11,9 +11,10 @@ public final class BattleBallJoinParametersComposer extends MessageComposer {
     public BattleBallJoinParametersComposer(BattleBallGame game) { this.game = game; }
     @Override protected ServerMessage composeInternal() {
         this.response.init(Outgoing.BattleBallJoinParametersComposer); this.response.appendInt(this.game.id());
-        this.response.appendInt(this.game.teams().size());
+        this.response.appendByte(this.game.teams().size());
+        this.response.appendByte(this.game.teams().get(0).capacity());
         for (BattleBallTeam team : this.game.teams()) {
-            this.response.appendInt(team.id()); this.response.appendInt(team.players().size()); this.response.appendInt(team.capacity());
+            this.response.appendByte(team.players().size());
         }
         return this.response;
     }

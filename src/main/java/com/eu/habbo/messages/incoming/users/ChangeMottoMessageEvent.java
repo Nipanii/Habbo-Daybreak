@@ -31,6 +31,12 @@ public class ChangeMottoMessageEvent extends MessageHandler {
             this.client.sendResponse(new UserChangeMessageComposer(this.client.getHabbo()));
         }
 
+        // Friends' lists show the motto, and nothing else refreshes it for them.
+        if (changed && this.client.getHabbo().getMessenger() != null) {
+            this.client.getHabbo().getMessenger().connectionChanged(this.client.getHabbo(), true,
+                    this.client.getHabbo().getHabboInfo().getCurrentRoom() != null);
+        }
+
         AchievementManager.progressAchievement(this.client.getHabbo(), Emulator.getGameEnvironment().getAchievementManager().getAchievement("Motto"));
     }
 }

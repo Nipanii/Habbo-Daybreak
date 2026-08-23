@@ -25,9 +25,15 @@ public class RequestGamehallLeaderboardMessageEvent extends MessageHandler {
             return;
         }
 
+        // The leaderboard is shared with BattleBall, whose lounge is not a Games Hall room -- its model
+        // is not in LEGACY_SEATS, so the check below drops the request silently and the High Scores link
+        // appears to do nothing. Watching the BattleBall games list counts as a valid place to ask.
         Room room = habbo.getHabboInfo().getCurrentRoom();
         String model = room != null && room.getLayout() != null ? room.getLayout().getName() : null;
-        if (!GamehallManager.isGamehallModel(model)) {
+        boolean inBattleBallLounge = Emulator.getGameEnvironment() != null
+                && Emulator.getGameEnvironment().getBattleBallManager() != null
+                && Emulator.getGameEnvironment().getBattleBallManager().inLounge(habbo.getHabboInfo().getId());
+        if (!GamehallManager.isGamehallModel(model) && !inBattleBallLounge) {
             return;
         }
 

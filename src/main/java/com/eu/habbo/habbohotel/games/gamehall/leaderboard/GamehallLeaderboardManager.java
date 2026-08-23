@@ -22,6 +22,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class GamehallLeaderboardManager {
     public static final String ALL_GAMES = "ALL";
+    public record BattleBallResult(int userId, int points, int outcome) {}
 
     private static final Logger LOGGER = LoggerFactory.getLogger(GamehallLeaderboardManager.class);
     private static final int POINTS_PER_WIN = 1;
@@ -71,6 +72,102 @@ public class GamehallLeaderboardManager {
             }
         } catch (SQLException e) {
             LOGGER.error("Caught SQL exception while recording Games Hall result", e);
+        }
+    }
+
+    /**
+     * Records every remaining player's BattleBall round result in one transaction.
+     *
+     * Only the aggregate is written here. The per-match history already lives in battleball_rounds and
+     * battleball_round_players, which are team-aware; gamehall_match_results is shaped for one-against-
+     * one and nothing reads it, so mirroring rounds into it would be a lossy duplicate of data we
+     * already hold.
+     *
+     * recordWin() above is strictly 1v1 -- a winner and a loser -- which does not describe a game of two
+     * to four teams. Here each player is scored individually: points are the tiles they personally
+     * claimed, so a strong player on a losing team still ranks, and the outcome is judged on their
+     * team's placing rather than a single opponent. Everything else (period rollup, ALL aggregation,
+     * streaks, cache invalidation) is shared with the seated games.
+     *
+     * Each result's outcome is 1 for a win, 0 for a draw, or -1 for a loss.
+     */
+    public void recordBattleBallResults(List<BattleBallResult> results) {
+        if (results == null || results.isEmpty()) return;
+        List<BattleBallResult> validResults = results.stream()
+                .filter(result -> result != null && result.userId() > 0 && result.points() >= 0)
+                .toList();
+        if (validResults.isEmpty()) return;
+
+        long now = System.currentTimeMillis() / 1000L;
+        String gameType = GamehallGameType.BATTLEBALL.name();
+
+        try (Connection connection = Emulator.getDatabase().getDataSource().getConnection()) {
+            boolean autoCommit = connection.getAutoCommit();
+            connection.setAutoCommit(false);
+            try {
+                for (BattleBallResult result : validResults) {
+                    updateScoreStats(connection, gameType, result.userId(), result.points(), result.outcome(), now);
+                    // The combined board compares different games, so use the same one-point-per-win
+                    // scale as seated games rather than letting BattleBall tile totals dominate it.
+                    updateScoreStats(connection, ALL_GAMES, result.userId(),
+                            result.outcome() > 0 ? POINTS_PER_WIN : 0, result.outcome(), now);
+                }
+
+                connection.commit();
+                connection.setAutoCommit(autoCommit);
+                invalidate(gameType);
+                invalidate(ALL_GAMES);
+            } catch (SQLException e) {
+                rollback(connection);
+                connection.setAutoCommit(autoCommit);
+                LOGGER.error("Caught SQL exception while recording BattleBall results", e);
+            }
+        } catch (SQLException e) {
+            LOGGER.error("Caught SQL exception while recording BattleBall results", e);
+        }
+    }
+
+    private void updateScoreStats(Connection connection, String gameType, int userId, int points, int outcome, long now)
+            throws SQLException {
+        for (GamehallLeaderboardPeriod period : GamehallLeaderboardPeriod.values()) {
+            updateScoreStatsForPeriod(connection, gameType, period, period.getCurrentPeriodStart(), userId, points, outcome, now);
+        }
+    }
+
+    private void updateScoreStatsForPeriod(Connection connection, String gameType, GamehallLeaderboardPeriod period,
+                                           long periodStart, int userId, int points, int outcome, long now) throws SQLException {
+        int wins = outcome > 0 ? 1 : 0;
+        int draws = outcome == 0 ? 1 : 0;
+        int losses = outcome < 0 ? 1 : 0;
+
+        // Insert rather than the UPDATE the loss path uses: a player's first ever round can be a loss,
+        // and they still scored tiles, so there may be no row to update yet.
+        String sql = "INSERT INTO gamehall_leaderboard_stats " +
+                "(game_type, period_type, period_start, user_id, points, wins, losses, draws, games_played, current_streak, best_streak, last_result_at) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?) " +
+                "ON DUPLICATE KEY UPDATE " +
+                "points = points + VALUES(points), " +
+                "wins = wins + VALUES(wins), " +
+                "losses = losses + VALUES(losses), " +
+                "draws = draws + VALUES(draws), " +
+                "games_played = games_played + 1, " +
+                "best_streak = IF(VALUES(wins) > 0, GREATEST(best_streak, current_streak + 1), best_streak), " +
+                "current_streak = IF(VALUES(wins) > 0, current_streak + 1, 0), " +
+                "last_result_at = GREATEST(last_result_at, VALUES(last_result_at))";
+
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, gameType);
+            statement.setString(2, period.name());
+            statement.setLong(3, periodStart);
+            statement.setInt(4, userId);
+            statement.setInt(5, points);
+            statement.setInt(6, wins);
+            statement.setInt(7, losses);
+            statement.setInt(8, draws);
+            statement.setInt(9, wins);
+            statement.setInt(10, wins);
+            statement.setLong(11, now);
+            statement.executeUpdate();
         }
     }
 

@@ -59,6 +59,7 @@ public class RewardTrackManager {
     }
 
     public synchronized void reload() {
+        long millis = System.currentTimeMillis();
         this.tracks.clear();
         this.enabled = Emulator.getConfig().getBoolean("rewardtrack.enabled", true);
 
@@ -71,10 +72,11 @@ public class RewardTrackManager {
             this.loadTasks(connection);
             this.loadTaskLevels(connection);
             this.loadRewards(connection);
-            LOGGER.info("RewardTrackManager -> Loaded {} reward track(s).", this.tracks.size());
+            LOGGER.info("Reward Track Manager -> Loaded! ({} MS, {} tracks)",
+                    System.currentTimeMillis() - millis, this.tracks.size());
         } catch (Exception e) {
             this.enabled = false;
-            LOGGER.error("RewardTrackManager -> Failed to load Reward Track definitions.", e);
+            LOGGER.error("Reward Track Manager -> Failed to load definitions.", e);
         }
     }
 

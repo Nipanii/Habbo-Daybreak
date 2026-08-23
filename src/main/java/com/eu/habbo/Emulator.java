@@ -143,10 +143,6 @@ public final class Emulator {
                 }
             }
 
-            LOGGER.info("Habbo Daybreak has successfully loaded.");
-            LOGGER.info("System launched in: {}ms. Using {} threads!", (System.nanoTime() - startTime) / 1e6, Runtime.getRuntime().availableProcessors() * 2);
-            LOGGER.info("Memory: {}/{}MB", (runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024), (runtime.freeMemory()) / (1024 * 1024));
-
             Emulator.debugging = Emulator.getConfig().getBoolean("debug.mode");
 
             if (debugging) {
@@ -159,11 +155,11 @@ public final class Emulator {
             Emulator.isReady = true;
             Emulator.timeStarted = getIntUnixTimestamp();
 
-            if (Emulator.getConfig().getInt("runtime.threads") < (Runtime.getRuntime().availableProcessors() * 2)) {
-                LOGGER.warn("Emulator settings runtime.threads ({}) can be increased to ({}) to possibly increase performance.",
-                        Emulator.getConfig().getInt("runtime.threads"),
-                        Runtime.getRuntime().availableProcessors() * 2);
-            }
+            long usedHeapMb = (runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024);
+            long maxHeapMb = runtime.maxMemory() / (1024 * 1024);
+            LOGGER.info("Habbo Daybreak -> Loaded! ({} MS, {} worker threads, heap {}/{} MB)",
+                    (System.nanoTime() - startTime) / 1_000_000,
+                    Emulator.getConfig().getInt("runtime.threads"), usedHeapMb, maxHeapMb);
 
             Emulator.getThreading().run(() -> {
             }, 1500);

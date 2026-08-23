@@ -10,6 +10,6 @@ public final class BattleBallGameLocationComposer extends MessageComposer {
     public BattleBallGameLocationComposer(BattleBallGame game, boolean spectator) { this.game = game; this.spectator = spectator; }
     @Override protected ServerMessage composeInternal() {
         this.response.init(Outgoing.BattleBallGameLocationComposer); this.response.appendInt(this.game.id());
-        this.response.appendInt(this.game.map().id()); this.response.appendBoolean(this.spectator); return this.response;
+        this.response.appendByte(this.game.map().id()); this.response.appendBoolean(this.spectator); return this.response;
     }
 }

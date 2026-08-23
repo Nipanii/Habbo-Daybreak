@@ -3,7 +3,6 @@ package com.eu.habbo.habbohotel.games.battleball;
 import com.eu.habbo.Emulator;
 import com.eu.habbo.habbohotel.rooms.RoomLayout;
 import com.eu.habbo.habbohotel.rooms.pathfinding.impl.GridPathfinder;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -15,11 +14,22 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
-import java.util.concurrent.ThreadLocalRandom;
 
 /** Server-authoritative original BattleBall match. One manager-owned 500 ms task calls {@link #tick}. */
 public final class BattleBallGame {
     public static final int MAX_ACTIVE_POWERS = 2;
+    /** Havana gives a player fifteen seconds to use a collected power. */
+    private static final long HELD_POWER_LIFETIME_MS = 15_000L;
+    /**
+     * Enough bots to fill every seat but the owner's. The largest game is 12 players however the
+     * teams are split -- 2x6, 3x4 or 4x3 -- so 11 bots fills it.
+     */
+    private static final int HARD_MAX_BOTS = 11;
+    private static final String DEFAULT_BOT_FIGURES =
+            "hr-100.hd-190-7.ch-210-66.lg-270-82.sh-290-80,"
+            + "hr-100-61.hd-190-1.ch-210-92.lg-270-82.sh-290-80,"
+            + "hr-115-42.hd-195-19.ch-3030-82.lg-275-1408.fa-1201.ca-1804-64,"
+            + "ch-665-92.hd-629-1.sh-740-92.hr-515-31.lg-3174-71-92.he-3082-92";
     private static final long TICK_MS = 500L;
     private static final int[][] DIRECTIONS = {{0,-1},{1,-1},{1,0},{1,1},{0,1},{-1,1},{-1,0},{-1,-1}};
 
@@ -37,21 +47,28 @@ public final class BattleBallGame {
     private final Map<Integer, BattleBallPlayer> players = new LinkedHashMap<>();
     private final Set<Integer> watchers = new HashSet<>();
     private final Map<Integer, BattleBallPowerUp> powers = new LinkedHashMap<>();
-    private final Map<Integer, BattleBallPin> pins = new LinkedHashMap<>();
-    private final Map<Integer, Long> cannonStunAt = new HashMap<>();
     private final LinkedHashSet<BattleBallTile> priorityTiles = new LinkedHashSet<>();
     private final LinkedHashSet<BattleBallTile> fillTiles = new LinkedHashSet<>();
     private final List<BattleBallEvent> events = new ArrayList<>();
+    private final Map<Integer, Integer> lastDeltaScores = new LinkedHashMap<>();
     private final Random random;
+    private final BattleBallPowerResolver powerResolver;
+    private final BattleBallBotStrategy botStrategy = new BattleBallBotStrategy();
     private final long idleTimeoutMs;
     private final long idleWarningMs;
     private final Map<Integer, Integer> idleWarnings = new LinkedHashMap<>();
+    private final Set<Integer> idleRemovals = new LinkedHashSet<>();
     private BattleBallState state = BattleBallState.LOBBY;
     private int nextObjectId = 1;
+    private int nextBotUserId = -1;
     private int sequence;
     private long stateEndsAt;
     private boolean initialPowersSpawned;
+    private boolean boardReset;
     private int roundNumber;
+    private boolean rankedRound;
+    private boolean rankedRequiresHumanOpponent;
+    private BattleBallRoundEndReason roundEndReason = BattleBallRoundEndReason.NONE;
 
     public BattleBallGame(int id, String name, int ownerUserId, String ownerName, BattleBallMap map,
                           int roundSeconds, int teamCount, int teamCapacity, boolean privateGame,
@@ -61,7 +78,7 @@ public final class BattleBallGame {
             throw new IllegalArgumentException("Invalid BattleBall identity");
         }
         if (roundSeconds < 60 || roundSeconds > 600 || teamCount < 2 || teamCount > 4
-                || teamCapacity < 1 || teamCapacity > 5) {
+                || teamCapacity < 1 || teamCapacity > maxTeamCapacity(teamCount)) {
             throw new IllegalArgumentException("Invalid BattleBall parameters");
         }
         this.id = id;
@@ -83,6 +100,8 @@ public final class BattleBallGame {
             for (int x = 0; x < map.width(); x++) this.tiles[x][y] = new BattleBallTile(x, y, map.isPlayable(x, y), map.floorHeight(x, y), map.isWalkable(x, y));
         }
         this.random = new Random(((long) id << 32) ^ ownerUserId);
+        this.powerResolver = new BattleBallPowerResolver(this.map, this.tiles, this.players,
+                this.priorityTiles, this.fillTiles, this.events, this.random, this::nextObjectId);
     }
 
     public synchronized int id() { return this.id; }
@@ -95,13 +114,32 @@ public final class BattleBallGame {
     public synchronized BattleBallState state() { return this.state; }
     public synchronized int sequence() { return this.sequence; }
     public synchronized int roundNumber() { return this.roundNumber; }
+    public synchronized boolean rankedRound() { return this.rankedRound; }
+    public synchronized BattleBallRoundEndReason roundEndReason() { return this.roundEndReason; }
+    public synchronized boolean roundAborted() { return this.roundEndReason.aborted(); }
     public synchronized List<BattleBallTeam> teams() { return List.copyOf(this.teams); }
     public synchronized Collection<BattleBallPlayer> players() { return List.copyOf(this.players.values()); }
     public synchronized Collection<BattleBallPowerUp> powers() { return List.copyOf(this.powers.values()); }
-    public synchronized Collection<BattleBallPin> pins() { return List.copyOf(this.pins.values()); }
+    public synchronized Collection<BattleBallPin> pins() { return this.powerResolver.pins(); }
     public synchronized Set<Integer> watchers() { return Set.copyOf(this.watchers); }
     public synchronized Set<BattleBallPowerType> enabledPowers() { return this.enabledPowers; }
     public synchronized int capacity() { return this.teams.stream().mapToInt(BattleBallTeam::capacity).sum(); }
+
+    /**
+     * Largest team for a given team count: 6, 4 or 3.
+     *
+     * Three sources agree. The cast sizes bb_area_teamN by team count -- 112px, 80px, 64px -- and each
+     * ends with a 16px Join strip, leaving six, four and three 16px rows; bb_ginfo4t declares exactly
+     * three kick icons. Havana's canSwitchTeam admits a player while size() <= 5/3/2, settling on the
+     * same numbers. Every map defines six spawn tiles per team, which covers the largest case.
+     */
+    public static int maxTeamCapacity(int teamCount) {
+        return switch (teamCount) {
+            case 2 -> 6;
+            case 3 -> 4;
+            default -> 3;
+        };
+    }
 
     public synchronized BattleBallTile tile(int x, int y) {
         return this.map.isPlayable(x, y) ? this.tiles[x][y] : null;
@@ -122,6 +160,32 @@ public final class BattleBallGame {
         this.players.put(userId, player);
         this.sequence++;
         this.events.add(BattleBallEvent.spawn(player.objectId()));
+        this.claimSpawnTile(player);
+        return true;
+    }
+
+    /** Adds a sessionless player during setup; all gameplay after this point uses the normal player path. */
+    public synchronized boolean addBot(int teamId) {
+        if (this.state != BattleBallState.LOBBY || teamId < 0 || teamId >= this.teams.size()) return false;
+        if (Emulator.getConfig() != null && !Emulator.getConfig().getBoolean("battleball.bots.enabled", true)) return false;
+        int configuredMaximum = Emulator.getConfig() == null ? HARD_MAX_BOTS
+                : Emulator.getConfig().getInt("battleball.bots.max-per-game", HARD_MAX_BOTS);
+        int maximum = Math.max(0, Math.min(HARD_MAX_BOTS, configuredMaximum));
+        long botCount = this.players.values().stream().filter(BattleBallPlayer::isBot).count();
+        if (botCount >= maximum) return false;
+
+        BattleBallTeam team = this.teams.get(teamId);
+        BattleBallPosition spawn = this.nextSpawn(teamId, team.players().size());
+        if (team.full() || spawn == null) return false;
+        int userId = this.nextBotUserId--;
+        int botNumber = -userId;
+        BattleBallPlayer bot = new BattleBallPlayer(this.nextObjectId++, userId, "Bot " + botNumber,
+                "", this.botFigure(botNumber - 1), "M", teamId, spawn);
+        if (!team.add(bot)) return false;
+        this.players.put(userId, bot);
+        this.sequence++;
+        this.events.add(BattleBallEvent.spawn(bot.objectId()));
+        this.claimSpawnTile(bot);
         return true;
     }
 
@@ -134,6 +198,8 @@ public final class BattleBallGame {
         if (!target.add(player)) return false;
         player.setTeamId(teamId);
         player.setPosition(this.nextSpawn(teamId, target.players().size() - 1));
+        this.claimSpawnTile(player);
+        this.events.add(BattleBallEvent.update(player.objectId()));
         this.sequence++;
         return true;
     }
@@ -148,11 +214,20 @@ public final class BattleBallGame {
     }
 
     public synchronized void addWatcher(int userId) { this.watchers.add(userId); }
-    public synchronized void removeWatcher(int userId) { this.watchers.remove(userId); }
+    /** @return whether this user actually was a watcher. */
+    public synchronized boolean removeWatcher(int userId) { return this.watchers.remove(userId); }
 
-    public synchronized boolean start(int actorUserId, long now) {
+    public synchronized boolean start(int actorUserId, long now, boolean rankedRound) {
+        return this.start(actorUserId, now, rankedRound, false);
+    }
+
+    public synchronized boolean start(int actorUserId, long now, boolean rankedRound,
+                                      boolean rankedRequiresHumanOpponent) {
         if (!this.canStart(actorUserId)) return false;
         this.resetBoard();
+        this.rankedRound = rankedRound;
+        this.rankedRequiresHumanOpponent = rankedRequiresHumanOpponent;
+        this.roundEndReason = BattleBallRoundEndReason.NONE;
         this.roundNumber++;
         this.state = BattleBallState.COUNTDOWN;
         this.stateEndsAt = now + 3_000L;
@@ -165,11 +240,19 @@ public final class BattleBallGame {
                 && this.teams.stream().filter(team -> !team.players().isEmpty()).count() >= 2;
     }
 
+    /** Whether the current lobby roster satisfies the configured ranked-match policy. */
+    public synchronized boolean rankedEligible(boolean requiresHumanOpponent) {
+        if (!requiresHumanOpponent) return true;
+        return this.teams.stream()
+                .filter(team -> team.players().stream().anyMatch(player -> !player.isBot()))
+                .count() >= 2;
+    }
+
     public synchronized boolean requestMove(int userId, int x, int y, long now) {
         if (this.state != BattleBallState.RUNNING) return false;
         BattleBallPlayer player = this.players.get(userId);
         BattleBallTile target = this.walkableTile(x, y);
-        if (player == null || target == null || player.disconnectedUntil() > 0 || player.state() == BattleBallPlayerState.STUNNED
+        if (player == null || target == null || player.state() == BattleBallPlayerState.STUNNED
                 || player.state() == BattleBallPlayerState.BALL_BROKEN) return false;
         List<BattleBallPosition> path = this.findPath(player.position(), x, y);
         if (path.isEmpty()) return false;
@@ -189,51 +272,39 @@ public final class BattleBallGame {
         this.powers.remove(powerObjectId);
         this.events.add(BattleBallEvent.activation(player.objectId(), powerObjectId, player.position().direction(), power.type().id()));
         this.events.add(BattleBallEvent.despawn(powerObjectId));
-        this.applyPower(player, power.type(), now);
-        this.sequence++;
-        return true;
-    }
-
-    public synchronized boolean markDisconnected(int userId, long until) {
-        BattleBallPlayer player = this.players.get(userId);
-        if (player == null) return false;
-        player.clearMovementPath();
-        player.setDisconnectedUntil(until);
-        return true;
-    }
-
-    public synchronized boolean rejoin(int userId) {
-        BattleBallPlayer player = this.players.get(userId);
-        if (player == null || player.disconnectedUntil() == 0) return false;
-        player.setDisconnectedUntil(0);
+        this.powerResolver.apply(player, power.type(), now);
         this.sequence++;
         return true;
     }
 
     public synchronized void tick(long now) {
         if (this.state == BattleBallState.DISPOSED || this.state == BattleBallState.LOBBY) return;
-        boolean changed = this.expireTemporaryState(now) | this.expireObjects(now) | this.expireDisconnected(now);
-        if ((this.state == BattleBallState.COUNTDOWN || this.state == BattleBallState.RUNNING) && this.players.size() < 2) {
-            this.state = BattleBallState.ENDING;
-            this.stateEndsAt = now + 5_000L;
-            for (BattleBallPlayer player : this.players.values()) player.clearMovementPath();
-            changed = true;
-        } else if (this.state == BattleBallState.COUNTDOWN && now >= this.stateEndsAt) {
+        boolean changed = this.powerResolver.expire(now) | this.expireObjects(now);
+        if (this.state == BattleBallState.COUNTDOWN || this.state == BattleBallState.RUNNING) {
+            BattleBallRoundEndReason invalidReason = this.invalidActiveRosterReason();
+            if (invalidReason != BattleBallRoundEndReason.NONE) {
+                this.endRound(now, invalidReason);
+                changed = true;
+            }
+        }
+        if (this.state == BattleBallState.COUNTDOWN && now >= this.stateEndsAt) {
             this.state = BattleBallState.RUNNING;
             this.stateEndsAt = now + this.roundSeconds * 1_000L;
             this.initialPowersSpawned = false;
             changed = true;
         } else if (this.state == BattleBallState.RUNNING) {
             changed |= this.checkIdle(now);
-            if (now < this.stateEndsAt) changed |= this.advanceMovingPlayers(now);
+            if (now < this.stateEndsAt) {
+                changed |= this.advanceMovingPlayers(now);
+                this.botStrategy.direct(this, now);
+            }
             if (!this.initialPowersSpawned) {
                 int count = this.random.nextInt(MAX_ACTIVE_POWERS + 1);
                 for (int i = 0; i < count; i++) this.spawnPower(now);
                 this.initialPowersSpawned = true;
                 changed = true;
             } else if (now >= this.stateEndsAt) {
-                this.state = BattleBallState.ENDING;
-                this.stateEndsAt = now + 5_000L;
+                this.endRound(now, BattleBallRoundEndReason.TIME_EXPIRED);
                 changed = true;
             } else if (this.random.nextDouble() < 0.06) {
                 changed |= this.spawnPower(now);
@@ -249,13 +320,23 @@ public final class BattleBallGame {
     public synchronized BattleBallUpdate consumeUpdate(long now, boolean full) {
         List<BattleBallTile> priority = full ? this.allTiles() : List.copyOf(this.priorityTiles);
         List<BattleBallTile> fill = full ? List.of() : List.copyOf(this.fillTiles);
+        Map<Integer, Integer> currentScores = this.scores();
+        Map<Integer, Integer> sentScores = new LinkedHashMap<>();
+        if (full) sentScores.putAll(currentScores);
+        else currentScores.forEach((team, score) -> {
+            if (!score.equals(this.lastDeltaScores.get(team))) sentScores.put(team, score);
+        });
         BattleBallUpdate update = new BattleBallUpdate(this.sequence, this.state, this.timeRemaining(now),
-                List.copyOf(this.players.values()), List.copyOf(this.powers.values()), List.copyOf(this.pins.values()),
-                priority, fill, this.scores(), full ? List.of() : List.copyOf(this.events));
+                List.copyOf(this.players.values()), List.copyOf(this.powers.values()), List.copyOf(this.powerResolver.pins()),
+                priority, fill, Collections.unmodifiableMap(sentScores), full ? List.of() : List.copyOf(this.events),
+                !full && this.boardReset);
         if (!full) {
             this.priorityTiles.clear();
             this.fillTiles.clear();
             this.events.clear();
+            this.boardReset = false;
+            this.lastDeltaScores.clear();
+            this.lastDeltaScores.putAll(currentScores);
         }
         return update;
     }
@@ -264,16 +345,22 @@ public final class BattleBallGame {
         if (this.state == BattleBallState.DISPOSED) return;
         this.state = BattleBallState.DISPOSED;
         this.powers.clear();
-        this.pins.clear();
-        this.cannonStunAt.clear();
+        this.powerResolver.reset();
         this.watchers.clear();
         this.idleWarnings.clear();
+        this.idleRemovals.clear();
         this.sequence++;
     }
 
     public synchronized Map<Integer, Integer> consumeIdleWarnings() {
         Map<Integer, Integer> result = Map.copyOf(this.idleWarnings);
         this.idleWarnings.clear();
+        return result;
+    }
+
+    public synchronized Set<Integer> consumeIdleRemovals() {
+        Set<Integer> result = Set.copyOf(this.idleRemovals);
+        this.idleRemovals.clear();
         return result;
     }
 
@@ -319,182 +406,9 @@ public final class BattleBallGame {
             if (choices.isEmpty()) return;
             type = choices.get(this.random.nextInt(choices.size()));
         }
-        found.collect(player, type, now + 7_500L);
+        found.collect(player, type, now + HELD_POWER_LIFETIME_MS);
         player.setHeldPowerObjectId(found.objectId());
         this.events.add(BattleBallEvent.pickup(player.objectId(), found.objectId(), type.id()));
-    }
-
-    private boolean hitPin(BattleBallPlayer player, int x, int y, long now) {
-        BattleBallPin hit = this.pins.values().stream().filter(pin -> pin.position().x() == x && pin.position().y() == y).findFirst().orElse(null);
-        if (hit == null) return false;
-        this.pins.remove(hit.objectId());
-        this.events.add(BattleBallEvent.despawn(hit.objectId()));
-        this.setState(player, BattleBallPlayerState.BALL_BROKEN, now + 5_000L, now);
-        return true;
-    }
-
-    private void applyPower(BattleBallPlayer player, BattleBallPowerType type, long now) {
-        switch (type) {
-            case LIGHT_BULB -> this.paintRadius(player, 5);
-            case SPRING -> this.setState(player, BattleBallPlayerState.HIGH_JUMPS, now + 10_000L, now);
-            case FLASHLIGHT -> this.paintLine(player, false, now);
-            case CANNON -> this.paintLine(player, true, now);
-            case BOX_OF_PINS -> this.spawnPins(player, now);
-            case HARLEQUIN -> this.harlequin(player, now);
-            case BOMB -> this.bomb(player, now);
-            case DRILL -> this.setState(player, BattleBallPlayerState.CLEANING_TILES, now + 10_000L, now);
-            case QUESTION_MARK -> { }
-        }
-    }
-
-    private void paintRadius(BattleBallPlayer player, int radius) {
-        int radiusSquared = radius * radius;
-        for (BattleBallPosition position : this.map.playablePositions()) {
-            if (position.distanceSquared(player.position()) > radiusSquared) continue;
-            BattleBallTile tile = this.tiles[position.x()][position.y()];
-            if (tile.state() == BattleBallTileState.SEALED) continue;
-            BattleBallTileState target = tile.colour() == player.teamId()
-                    ? (tile.state() == BattleBallTileState.DEFAULT ? BattleBallTileState.CLICKED : tile.state().next())
-                    : BattleBallTileState.CLICKED;
-            if (tile.paint(player.teamId(), target, this.scoringUser(player))) {
-                this.priorityTiles.add(tile);
-                if (target == BattleBallTileState.SEALED) this.fillFrom(tile, player.teamId(), this.scoringUser(player));
-            }
-        }
-    }
-
-    private void paintLine(BattleBallPlayer player, boolean cannon, long now) {
-        int[] vector = directionVector(player.position().direction());
-        int x = player.position().x();
-        int y = player.position().y();
-        BattleBallPosition last = player.position();
-        while (this.map.isPlayable(x + vector[0], y + vector[1])) {
-            x += vector[0]; y += vector[1];
-            BattleBallTile tile = this.tiles[x][y];
-            if (tile.state() != BattleBallTileState.SEALED) {
-                BattleBallTileState target = cannon ? BattleBallTileState.SEALED
-                        : (tile.colour() == player.teamId()
-                            ? (tile.state() == BattleBallTileState.DEFAULT ? BattleBallTileState.CLICKED : tile.state().next())
-                            : BattleBallTileState.CLICKED);
-                if (tile.paint(player.teamId(), target, this.scoringUser(player))) {
-                    this.priorityTiles.add(tile);
-                    if (target == BattleBallTileState.SEALED) this.fillFrom(tile, player.teamId(), this.scoringUser(player));
-                }
-            }
-            if (cannon) {
-                for (BattleBallPlayer other : this.players.values()) {
-                    if (other.userId() != player.userId() && other.position().x() == x && other.position().y() == y) {
-                        this.pushSideways(other, player.position().direction());
-                        this.setState(other, BattleBallPlayerState.STUNNED, now + 5_000L, now);
-                    }
-                }
-            }
-            last = new BattleBallPosition(x, y, 0.0, player.position().direction());
-        }
-        if (cannon && last != player.position()) {
-            player.clearMovementPath();
-            player.setState(BattleBallPlayerState.FLYING_THROUGH_AIR, 0);
-            this.events.add(BattleBallEvent.state(player.objectId(), BattleBallPlayerState.FLYING_THROUGH_AIR.id(), 800));
-            this.cannonStunAt.put(player.objectId(), now + 800L);
-            player.setPosition(last);
-            this.events.add(BattleBallEvent.move(player.objectId(), last.x(), last.y()));
-        }
-    }
-
-    private void spawnPins(BattleBallPlayer player, long now) {
-        int[] vector = directionVector(player.position().direction());
-        int centreX = player.position().x() + vector[0] * 6;
-        int centreY = player.position().y() + vector[1] * 6;
-        List<BattleBallPosition> candidates = new ArrayList<>();
-        for (BattleBallPosition position : this.map.playablePositions()) {
-            int dx = position.x() - centreX;
-            int dy = position.y() - centreY;
-            if (dx * dx + dy * dy <= 9 && (position.x() != player.position().x() || position.y() != player.position().y())) candidates.add(position);
-        }
-        Collections.shuffle(candidates, this.random);
-        int count = Math.min(candidates.size(), 8 + this.random.nextInt(8));
-        for (int i = 0; i < count; i++) {
-            int objectId = this.nextObjectId++;
-            BattleBallPin pin = new BattleBallPin(objectId, candidates.get(i), now + (12 + this.random.nextInt(5)) * 1_000L);
-            this.pins.put(objectId, pin);
-            this.events.add(BattleBallEvent.spawn(objectId));
-        }
-    }
-
-    private void harlequin(BattleBallPlayer activator, long now) {
-        for (BattleBallPlayer player : this.players.values()) {
-            if (player.teamId() == activator.teamId() || player.state() != BattleBallPlayerState.NORMAL) continue;
-            player.setColouringForUserId(activator.userId());
-            this.setState(player, BattleBallPlayerState.COLORING_FOR_OPPONENT, now + 10_000L, now);
-        }
-    }
-
-    private void bomb(BattleBallPlayer activator, long now) {
-        for (BattleBallPosition position : this.map.playablePositions()) {
-            int distance = position.distanceSquared(activator.position());
-            if (distance <= 9) {
-                BattleBallTile tile = this.tiles[position.x()][position.y()];
-                if (tile.reset()) this.priorityTiles.add(tile);
-            }
-        }
-        for (BattleBallPlayer player : this.players.values()) {
-            if (player.position().distanceSquared(activator.position()) <= 49) {
-                if (player != activator) this.pushAway(player, activator.position());
-                this.setState(player, BattleBallPlayerState.STUNNED, now + 5_000L, now);
-            }
-        }
-    }
-
-    private void pushAway(BattleBallPlayer player, BattleBallPosition centre) {
-        int dx = Integer.compare(player.position().x(), centre.x());
-        int dy = Integer.compare(player.position().y(), centre.y());
-        int x = player.position().x() + dx;
-        int y = player.position().y() + dy;
-        if (this.map.isPlayable(x, y)) {
-            player.setPosition(new BattleBallPosition(x, y, 0.0, direction(centre.x(), centre.y(), x, y)));
-            this.events.add(BattleBallEvent.move(player.objectId(), x, y));
-        }
-    }
-
-    private void pushSideways(BattleBallPlayer player, int cannonDirection) {
-        int[] right = directionVector(cannonDirection + 2);
-        int x = player.position().x() + right[0];
-        int y = player.position().y() + right[1];
-        if (!this.map.isPlayable(x, y)) {
-            int[] left = directionVector(cannonDirection - 2);
-            x = player.position().x() + left[0]; y = player.position().y() + left[1];
-        }
-        if (this.map.isPlayable(x, y)) {
-            player.setPosition(new BattleBallPosition(x, y, 0.0, player.position().direction()));
-            this.events.add(BattleBallEvent.move(player.objectId(), x, y));
-        }
-    }
-
-    private void setState(BattleBallPlayer player, BattleBallPlayerState state, long until, long now) {
-        if (state == BattleBallPlayerState.STUNNED || state == BattleBallPlayerState.BALL_BROKEN
-                || state == BattleBallPlayerState.FLYING_THROUGH_AIR) player.clearMovementPath();
-        player.setState(state, until);
-        this.events.add(BattleBallEvent.state(player.objectId(), state.id(), (int) Math.max(0, until - now)));
-    }
-
-    private boolean expireTemporaryState(long now) {
-        boolean changed = false;
-        List<Integer> cannonDue = this.cannonStunAt.entrySet().stream().filter(entry -> entry.getValue() <= now).map(Map.Entry::getKey).toList();
-        for (int objectId : cannonDue) {
-            this.cannonStunAt.remove(objectId);
-            this.players.values().stream().filter(player -> player.objectId() == objectId).findFirst()
-                    .ifPresent(player -> this.setState(player, BattleBallPlayerState.STUNNED, now + 5_000L, now));
-            changed = true;
-        }
-        for (BattleBallPlayer player : this.players.values()) {
-            if (player.state() != BattleBallPlayerState.NORMAL && player.stateUntil() > 0 && player.stateUntil() <= now) {
-                player.setState(BattleBallPlayerState.NORMAL, 0);
-                player.setColouringForUserId(-1);
-                this.events.add(BattleBallEvent.state(player.objectId(), BattleBallPlayerState.NORMAL.id(), 0));
-                changed = true;
-            }
-        }
-        return changed;
     }
 
     private boolean expireObjects(long now) {
@@ -508,22 +422,13 @@ public final class BattleBallGame {
                 changed = true;
             }
         }
-        List<Integer> expiredPins = this.pins.values().stream().filter(pin -> pin.expiresAt() <= now).map(BattleBallPin::objectId).toList();
-        for (int id : expiredPins) { this.pins.remove(id); this.events.add(BattleBallEvent.despawn(id)); changed = true; }
         return changed;
-    }
-
-    private boolean expireDisconnected(long now) {
-        List<Integer> expired = this.players.values().stream().filter(player -> player.disconnectedUntil() > 0 && player.disconnectedUntil() <= now).map(BattleBallPlayer::userId).toList();
-        for (int userId : expired) this.removePlayer(userId);
-        return !expired.isEmpty();
     }
 
     private boolean checkIdle(long now) {
         boolean changed = false;
         List<Integer> remove = new ArrayList<>();
         for (BattleBallPlayer player : this.players.values()) {
-            if (player.disconnectedUntil() > 0) continue;
             if (player.lastActionAt() == 0) player.markActive(now);
             long remaining = this.idleTimeoutMs - (now - player.lastActionAt());
             if (remaining <= 0) remove.add(player.userId());
@@ -532,7 +437,11 @@ public final class BattleBallGame {
                 this.idleWarnings.put(player.userId(), (int) Math.max(1, (remaining + 999) / 1_000));
             }
         }
-        for (int userId : remove) { this.removePlayer(userId); changed = true; }
+        for (int userId : remove) {
+            BattleBallPlayer player = this.removePlayer(userId);
+            if (player != null && !player.isBot()) this.idleRemovals.add(userId);
+            changed = true;
+        }
         return changed;
     }
 
@@ -553,47 +462,39 @@ public final class BattleBallGame {
         return true;
     }
 
-    private void fillFrom(BattleBallTile sealed, int teamId, int scoringUserId) {
-        for (int[] direction : DIRECTIONS) {
-            int startX = sealed.x() + direction[0];
-            int startY = sealed.y() + direction[1];
-            BattleBallTile start = this.tile(startX, startY);
-            if (start == null || (start.colour() == teamId && start.state() == BattleBallTileState.SEALED)) continue;
-            Set<BattleBallTile> region = new LinkedHashSet<>();
-            ArrayDeque<BattleBallTile> open = new ArrayDeque<>();
-            open.add(start);
-            boolean bounded = true;
-            while (!open.isEmpty() && bounded) {
-                BattleBallTile current = open.removeFirst();
-                if (!region.add(current)) continue;
-                for (int[] step : DIRECTIONS) {
-                    int x = current.x() + step[0];
-                    int y = current.y() + step[1];
-                    BattleBallTile neighbour = this.tile(x, y);
-                    if (neighbour == null) { bounded = false; break; }
-                    if (neighbour.colour() == teamId && neighbour.state() == BattleBallTileState.SEALED) continue;
-                    if (!region.contains(neighbour)) open.addLast(neighbour);
-                }
-            }
-            if (bounded) {
-                for (BattleBallTile tile : region) if (tile.sealFromFill(teamId, scoringUserId)) this.fillTiles.add(tile);
-            }
-        }
-    }
-
     private void resetBoard() {
         for (int y = 0; y < this.map.height(); y++) for (int x = 0; x < this.map.width(); x++) this.tiles[x][y].reset();
-        this.powers.clear(); this.pins.clear(); this.cannonStunAt.clear(); this.idleWarnings.clear(); this.priorityTiles.clear(); this.fillTiles.clear(); this.events.clear();
+        this.powers.clear();
+        this.powerResolver.reset();
+        this.idleWarnings.clear(); this.priorityTiles.clear(); this.fillTiles.clear(); this.events.clear();
         this.initialPowersSpawned = false;
+        this.boardReset = true;
         for (BattleBallTeam team : this.teams) {
             int index = 0;
             for (BattleBallPlayer player : team.players()) {
                 player.setPosition(this.nextSpawn(team.id(), index++));
                 player.setState(BattleBallPlayerState.NORMAL, 0);
                 player.setHeldPowerObjectId(-1);
-                player.setColouringForUserId(-1);
+                player.setColouringForUserId(BattleBallPlayer.NOT_COLOURING);
                 player.clearMovementPath();
+                this.claimSpawnTile(player);
             }
+        }
+    }
+
+    /**
+     * Colours the tile a player occupies for their team, as Havana does when it seats a player at their
+     * spawn. Claimed the moment they take the square -- on join, on a team switch and again when the
+     * board is reset for a round -- so it is already their colour before play begins; it is simply
+     * hidden under the rider until they move, which is why it looks like stepping off paints it.
+     */
+    private void claimSpawnTile(BattleBallPlayer player) {
+        BattleBallPosition position = player.position();
+        if (position == null) return;
+        BattleBallTile tile = this.tile(position.x(), position.y());
+        if (tile == null || !tile.playable()) return;
+        if (tile.land(this.map.id(), player.teamId(), player.userId(), false, false)) {
+            this.priorityTiles.add(tile);
         }
     }
 
@@ -601,7 +502,7 @@ public final class BattleBallGame {
     private boolean advanceMovingPlayers(long now) {
         boolean changed = false;
         for (BattleBallPlayer player : this.players.values()) {
-            if (player.disconnectedUntil() > 0 || player.state() == BattleBallPlayerState.STUNNED
+            if (player.state() == BattleBallPlayerState.STUNNED
                     || player.state() == BattleBallPlayerState.BALL_BROKEN
                     || player.state() == BattleBallPlayerState.FLYING_THROUGH_AIR) {
                 player.clearMovementPath();
@@ -627,18 +528,18 @@ public final class BattleBallGame {
             this.events.add(BattleBallEvent.move(player.objectId(), next.x(), next.y()));
             this.collectPower(player, next.x(), next.y(), now);
             changed = true;
-            if (this.hitPin(player, next.x(), next.y(), now)) continue;
+            if (this.powerResolver.hitPin(player, next.x(), next.y(), now)) continue;
 
             BattleBallTile tile = this.walkableTile(next.x(), next.y());
             if (tile == null || !tile.playable()) continue;
-            int effectiveTeam = this.scoringTeam(player);
-            boolean landed = tile.land(this.map.id(), effectiveTeam, this.scoringUser(player),
+            int effectiveTeam = this.powerResolver.scoringTeam(player);
+            boolean landed = tile.land(this.map.id(), effectiveTeam, this.powerResolver.scoringUser(player),
                     player.state() == BattleBallPlayerState.HIGH_JUMPS,
                     player.state() == BattleBallPlayerState.CLEANING_TILES);
             if (landed) {
                 this.priorityTiles.add(tile);
                 if (tile.state() == BattleBallTileState.SEALED) {
-                    this.fillFrom(tile, effectiveTeam, this.scoringUser(player));
+                    this.powerResolver.fillFrom(tile, effectiveTeam, this.powerResolver.scoringUser(player));
                 }
             }
         }
@@ -651,7 +552,7 @@ public final class BattleBallGame {
     }
 
     /** Uses the hotel's shared grid pathfinder over the arena floor, including non-scoring ramps. */
-    private List<BattleBallPosition> findPath(BattleBallPosition start, int targetX, int targetY) {
+    List<BattleBallPosition> findPath(BattleBallPosition start, int targetX, int targetY) {
         GridPathfinder.Grid grid = new GridPathfinder.Grid() {
             @Override public int width() { return map.width(); }
             @Override public int height() { return map.height(); }
@@ -682,18 +583,44 @@ public final class BattleBallGame {
         return teamSpawns.isEmpty() ? null : teamSpawns.get(index % teamSpawns.size());
     }
 
-    private int scoringUser(BattleBallPlayer player) {
-        return player.colouringForUserId() > 0 ? player.colouringForUserId() : player.userId();
+    private String botFigure(int index) {
+        String configured = Emulator.getConfig() == null ? DEFAULT_BOT_FIGURES
+                : Emulator.getConfig().getValue("battleball.bot.figures", DEFAULT_BOT_FIGURES);
+        List<String> figures = new ArrayList<>();
+        for (String value : configured.split(",")) if (!value.isBlank()) figures.add(value.trim());
+        if (figures.isEmpty()) figures.add(DEFAULT_BOT_FIGURES.substring(0, DEFAULT_BOT_FIGURES.indexOf(',')));
+        return figures.get(Math.floorMod(index, figures.size()));
     }
 
-    private int scoringTeam(BattleBallPlayer player) {
-        if (player.colouringForUserId() <= 0) return player.teamId();
-        BattleBallPlayer activator = this.players.get(player.colouringForUserId());
-        return activator == null ? player.teamId() : activator.teamId();
-    }
+    int scoringTeam(BattleBallPlayer player) { return this.powerResolver.scoringTeam(player); }
+
+    private int nextObjectId() { return this.nextObjectId++; }
 
     private long timeRemaining(long now) {
         return this.stateEndsAt == 0 ? 0 : Math.max(0, this.stateEndsAt - now);
+    }
+
+    public synchronized int timeRemainingMs(long now) {
+        return (int) Math.min(Integer.MAX_VALUE, this.timeRemaining(now));
+    }
+
+    private BattleBallRoundEndReason invalidActiveRosterReason() {
+        long activeTeams = this.teams.stream().filter(team -> !team.players().isEmpty()).count();
+        if (activeTeams < 2) return BattleBallRoundEndReason.INSUFFICIENT_ACTIVE_TEAMS;
+        if (this.rankedRound && this.rankedRequiresHumanOpponent) {
+            long humanTeams = this.teams.stream()
+                    .filter(team -> team.players().stream().anyMatch(player -> !player.isBot()))
+                    .count();
+            if (humanTeams < 2) return BattleBallRoundEndReason.HUMAN_OPPOSITION_LOST;
+        }
+        return BattleBallRoundEndReason.NONE;
+    }
+
+    private void endRound(long now, BattleBallRoundEndReason reason) {
+        this.state = BattleBallState.ENDING;
+        this.stateEndsAt = now + 5_000L;
+        this.roundEndReason = reason;
+        for (BattleBallPlayer player : this.players.values()) player.clearMovementPath();
     }
 
     private static int direction(int fromX, int fromY, int toX, int toY) {
@@ -703,7 +630,4 @@ public final class BattleBallGame {
         return 0;
     }
 
-    private static int[] directionVector(int direction) {
-        return DIRECTIONS[Math.floorMod(direction, DIRECTIONS.length)];
-    }
 }

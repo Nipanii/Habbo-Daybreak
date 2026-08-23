@@ -15,8 +15,15 @@ public final class BattleBallPlayer {
     private BattleBallPlayerState state = BattleBallPlayerState.NORMAL;
     private long stateUntil;
     private int heldPowerObjectId = -1;
-    private int colouringForUserId = -1;
-    private long disconnectedUntil;
+    /**
+     * Whose team this player's tiles score for while harlequinned, or NOT_COLOURING.
+     *
+     * The sentinel is 0 rather than -1 because bots hold negative user ids: -1 is a legitimate bot,
+     * so the old sentinel made a bot activator indistinguishable from "nobody", and bot harlequin
+     * silently credited nothing.
+     */
+    public static final int NOT_COLOURING = 0;
+    private int colouringForUserId = NOT_COLOURING;
     private long lastActionAt;
     private boolean idleWarningSent;
     private final ArrayDeque<BattleBallPosition> movementPath = new ArrayDeque<>();
@@ -36,6 +43,8 @@ public final class BattleBallPlayer {
 
     public int objectId() { return this.objectId; }
     public int userId() { return this.userId; }
+    /** Game-scoped bots use negative ids; real account ids are always positive. */
+    public boolean isBot() { return this.userId < 0; }
     public String name() { return this.name; }
     public String motto() { return this.motto; }
     public String figure() { return this.figure; }
@@ -46,7 +55,6 @@ public final class BattleBallPlayer {
     public long stateUntil() { return this.stateUntil; }
     public int heldPowerObjectId() { return this.heldPowerObjectId; }
     public int colouringForUserId() { return this.colouringForUserId; }
-    public long disconnectedUntil() { return this.disconnectedUntil; }
     public long lastActionAt() { return this.lastActionAt; }
     public boolean idleWarningSent() { return this.idleWarningSent; }
 
@@ -54,10 +62,10 @@ public final class BattleBallPlayer {
     void setPosition(BattleBallPosition position) { this.position = position; }
     void setHeldPowerObjectId(int objectId) { this.heldPowerObjectId = objectId; }
     void setColouringForUserId(int userId) { this.colouringForUserId = userId; }
-    void setDisconnectedUntil(long value) { this.disconnectedUntil = value; }
     void setIdleWarningSent(boolean value) { this.idleWarningSent = value; }
 
     BattleBallPosition movementGoal() { return this.movementGoal; }
+    boolean hasMovementPath() { return !this.movementPath.isEmpty(); }
 
     void replaceMovementPath(Collection<BattleBallPosition> path, BattleBallPosition goal) {
         this.movementPath.clear();

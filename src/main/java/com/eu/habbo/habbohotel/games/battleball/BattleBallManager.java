@@ -1,7 +1,7 @@
 package com.eu.habbo.habbohotel.games.battleball;
 
 import com.eu.habbo.Emulator;
-import com.eu.habbo.habbohotel.rooms.Room;
+import com.eu.habbo.habbohotel.gameclients.GameClient;
 import com.eu.habbo.habbohotel.users.Habbo;
 import com.eu.habbo.messages.outgoing.MessageComposer;
 import com.eu.habbo.messages.outgoing.Outgoing;
@@ -9,13 +9,17 @@ import com.eu.habbo.messages.outgoing.games.battleball.BattleBallFullGameStatusC
 import com.eu.habbo.messages.outgoing.games.battleball.BattleBallGameEndComposer;
 import com.eu.habbo.messages.outgoing.games.battleball.BattleBallGameInstanceComposer;
 import com.eu.habbo.messages.outgoing.games.battleball.BattleBallGameLocationComposer;
-import com.eu.habbo.messages.outgoing.games.battleball.BattleBallGamePlayerInfoComposer;
 import com.eu.habbo.messages.outgoing.games.battleball.BattleBallGameStartComposer;
 import com.eu.habbo.messages.outgoing.games.battleball.BattleBallGameStatusComposer;
 import com.eu.habbo.messages.outgoing.games.battleball.BattleBallInstanceListComposer;
 import com.eu.habbo.messages.outgoing.games.battleball.BattleBallLoungeInfoComposer;
+import com.eu.habbo.messages.outgoing.games.battleball.BattleBallPlayerRemovedComposer;
 import com.eu.habbo.messages.outgoing.games.battleball.BattleBallSignalComposer;
+import com.eu.habbo.messages.outgoing.games.battleball.BattleBallSpectatorCountComposer;
+import com.eu.habbo.messages.outgoing.games.battleball.BattleBallTicketBalanceComposer;
+import com.eu.habbo.messages.outgoing.games.battleball.BattleBallTicketPurchaseResultComposer;
 import com.eu.habbo.messages.outgoing.users.HabboActivityPointNotificationMessageComposer;
+import com.eu.habbo.messages.outgoing.users.CreditBalanceMessageComposer;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -26,9 +30,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -45,6 +54,14 @@ public final class BattleBallManager {
     public static final int FAILURE_NOT_ENOUGH_TEAMS = 9;
     public static final int FAILURE_NOT_A_PLAYER = 10;
     public static final int FAILURE_NOT_ALLOWED = 11;
+    public static final int PURCHASE_OK = 0;
+    public static final int PURCHASE_INSUFFICIENT_CREDITS = 1;
+    public static final int PURCHASE_RECIPIENT_NOT_FOUND = 2;
+    public static final int PURCHASE_INVALID_BUNDLE = 3;
+    public static final int PURCHASE_DATABASE_ERROR = 4;
+    public static final int REQUEST_THROTTLED = -2;
+    public static final int REMOVAL_KICKED = 0;
+    public static final int REMOVAL_IDLE = 1;
 
     public record Creation(String name, int mapId, int roundSeconds, int teamCount, int teamCapacity,
                            int selectedTeam, boolean privateGame, Set<BattleBallPowerType> powers) {}
@@ -55,15 +72,30 @@ public final class BattleBallManager {
     }
 
     private static final Logger LOGGER = LoggerFactory.getLogger(BattleBallManager.class);
+    private static final String LOUNGE_MODEL = "bb_lobby_1";
+    private static final long MOVE_INTERVAL_MS = 50L;
+    private static final long ACTIVATE_INTERVAL_MS = 250L;
+    private static final long FULL_STATUS_INTERVAL_MS = 1_000L;
+    private static final long ROSTER_MUTATION_INTERVAL_MS = 500L;
+    private static final int MAX_CONSECUTIVE_TICK_FAILURES = 3;
+    private enum RequestAction { MOVE, ACTIVATE, FULL_STATUS, ROSTER_MUTATION }
+    private record RequestKey(int userId, int instanceId, RequestAction action) {}
     private final BattleBallRepository repository = new BattleBallRepository();
     private final Map<Integer, BattleBallGame> games = new ConcurrentHashMap<>();
+    /** Persisted, non-aborted rounds keyed by their positive database result id. */
+    private final Map<Integer, BattleBallFinishedGame> finishedGames = new ConcurrentHashMap<>();
     private final Map<Integer, Integer> userGames = new ConcurrentHashMap<>();
-    /** Hotel room each participant occupied before entering an isolated BattleBall arena. */
-    private final Map<Integer, Integer> returnRooms = new ConcurrentHashMap<>();
     /** Players currently watching the games list, so newly created games appear without a room reload. */
     private final Set<Integer> lounge = ConcurrentHashMap.newKeySet();
     private final Map<Integer, Integer> lastSequences = new ConcurrentHashMap<>();
-    private final Map<Integer, BattleBallState> lastStates = new ConcurrentHashMap<>();
+    private final Set<Integer> startingGames = ConcurrentHashMap.newKeySet();
+    private final Map<RequestKey, Long> requestTimestamps = new ConcurrentHashMap<>();
+    private final Map<Integer, Integer> tickFailures = new ConcurrentHashMap<>();
+    private final ExecutorService persistenceExecutor = Executors.newSingleThreadExecutor(task -> {
+        Thread thread = new Thread(task, "BattleBallPersistence");
+        thread.setDaemon(true);
+        return thread;
+    });
     private final AtomicInteger nextInstanceId = new AtomicInteger(1);
     private Map<Integer, BattleBallMap> maps = Map.of();
     private Map<Integer, Map<Integer, List<BattleBallPosition>>> spawns = Map.of();
@@ -71,41 +103,87 @@ public final class BattleBallManager {
     private volatile boolean enabled;
 
     public BattleBallManager() {
+        long millis = System.currentTimeMillis();
         this.enabled = Emulator.getConfig().getBoolean("battleball.enabled", false);
         if (!this.enabled) return;
         try {
             BattleBallRepository.LoadedData loaded = this.repository.load();
             this.maps = loaded.maps();
             this.spawns = loaded.spawns();
+            for (BattleBallFinishedGame result : this.repository.loadRecentResults(15)) {
+                this.finishedGames.put(result.resultId(), result);
+            }
             this.nextInstanceId.set(this.repository.nextInstanceId());
             this.tickTask = Emulator.getThreading().getService().scheduleAtFixedRate(this::tick, 500, 500, TimeUnit.MILLISECONDS);
-            LOGGER.info("BattleBall -> Loaded all five maps and started the authoritative 500 ms loop.");
-        } catch (SQLException exception) {
+            LOGGER.info("BattleBall Manager -> Loaded! ({} MS, {} maps)",
+                    System.currentTimeMillis() - millis, this.maps.size());
+            LOGGER.debug("BattleBall Manager -> Started authoritative 500 MS tick loop.");
+        } catch (SQLException | IllegalArgumentException exception) {
             this.enabled = false;
-            LOGGER.error("BattleBall -> Disabled because its SQL data is unavailable.", exception);
+            LOGGER.error("BattleBall Manager -> Disabled because its map or SQL data is invalid.", exception);
         }
     }
 
     public boolean enabled() { return this.enabled; }
-    public int currencyType() { return Emulator.getConfig().getInt("battleball.ticket.currency.type", 0); }
+    public int currencyType() { return Emulator.getConfig().getInt("battleball.ticket.currency.type", 106); }
     public int ticketCost() { return Math.max(0, Emulator.getConfig().getInt("battleball.ticket.cost", 2)); }
-    public int skillLevel(int userId) { return this.repository.skillLevel(userId); }
+    public int skillLevel(int userId) { return this.enabled ? this.repository.skillLevel(userId) : 1; }
 
-    public List<BattleBallGame> instancesFor(Habbo habbo) {
-        return this.games.values().stream().filter(game -> !game.privateGame() || game.ownerUserId() == habbo.getHabboInfo().getId()
-                        || game.players().stream().anyMatch(player -> player.userId() == habbo.getHabboInfo().getId()))
-                .sorted(Comparator.comparingInt(BattleBallGame::id)).toList();
+    public List<BattleBallInstanceSummary> instancesFor(Habbo habbo) {
+        if (!this.enabled || habbo == null || habbo.getHabboInfo() == null) return List.of();
+        int userId = habbo.getHabboInfo().getId();
+        List<BattleBallInstanceSummary> result = new ArrayList<>();
+        this.games.values().stream()
+                .filter(game -> game.state() != BattleBallState.ENDING && canDiscover(game, userId))
+                .sorted(Comparator.comparingInt((BattleBallGame game) -> game.state().id())
+                        .thenComparingInt(BattleBallGame::id))
+                .map(BattleBallInstanceSummary::live).forEach(result::add);
+        this.finishedGames.values().stream().filter(game -> game.visibleTo(userId))
+                .sorted(Comparator.comparingInt(BattleBallFinishedGame::endedAt).reversed()
+                        .thenComparing(Comparator.comparingInt(BattleBallFinishedGame::resultId).reversed()))
+                .limit(15).map(BattleBallInstanceSummary::finished).forEach(result::add);
+        return List.copyOf(result);
     }
 
-    public BattleBallGame get(int instanceId) { return this.games.get(instanceId); }
+    /**
+     * Whether this user may see a game, and therefore join or watch it.
+     *
+     * Filtering only the initial list left "private" cosmetic: join, watch and observe accepted any
+     * guessed instance id, and every lobby broadcast pushed private rows to the whole lounge.
+     */
+    private static boolean canDiscover(BattleBallGame game, int userId) {
+        if (!game.privateGame() || game.ownerUserId() == userId) return true;
+        return game.players().stream().anyMatch(player -> player.userId() == userId)
+                || game.watchers().contains(userId);
+    }
+
+    public BattleBallGame get(int instanceId) { return this.enabled ? this.games.get(instanceId) : null; }
+
+    public BattleBallGame discoverableGame(int instanceId, int userId) {
+        BattleBallGame game = this.get(instanceId);
+        return game != null && canDiscover(game, userId) ? game : null;
+    }
 
     public void sendLounge(Habbo habbo) {
+        if (!this.enabled || !isInLoungeRoom(habbo)) return;
         // Asking for the lounge is what marks a player as watching the games list. Without this, a new
         // game only reached players and watchers of games that already existed, so anyone standing in the
         // lounge kept an empty list until they re-entered the room.
         this.lounge.add(habbo.getHabboInfo().getId());
-        habbo.getClient().sendResponse(new BattleBallLoungeInfoComposer(this.currencyType(), this.ticketCost(), this.skillLevel(habbo.getHabboInfo().getId())));
-        habbo.getClient().sendResponse(new BattleBallInstanceListComposer(this.instancesFor(habbo)));
+        this.sendSafely(habbo, new BattleBallLoungeInfoComposer(this.ticketCost(),
+                this.skillLevel(habbo.getHabboInfo().getId()), this.ticketBalance(habbo)), "lounge info");
+        this.sendSafely(habbo, new BattleBallInstanceListComposer(this.instancesFor(habbo)), "instance list");
+    }
+
+    /** Whether this player is watching the BattleBall games list. */
+    public boolean inLounge(int userId) {
+        if (!this.enabled || !this.lounge.contains(userId)) return false;
+        Habbo habbo = Emulator.getGameEnvironment().getHabboManager().getHabbo(userId);
+        if (!isInLoungeRoom(habbo)) {
+            this.lounge.remove(userId);
+            return false;
+        }
+        return true;
     }
 
     /** Drops a player from the games-list audience; they re-subscribe by asking for the lounge again. */
@@ -120,6 +198,7 @@ public final class BattleBallManager {
             return existing != null && existing.ownerUserId() == userId && existing.state() == BattleBallState.LOBBY
                     ? Result.success(existing) : Result.failed(FAILURE_ALREADY_IN_GAME);
         }
+        if (!this.canAffordRound(habbo)) return Result.failed(FAILURE_INSUFFICIENT_TICKETS);
         if (!valid(creation) || this.games.size() >= Emulator.getConfig().getInt("battleball.max.instances", 100)) return Result.failed(FAILURE_BAD_PARAMETERS);
         BattleBallMap map = this.maps.get(creation.mapId());
         Map<Integer, List<BattleBallPosition>> mapSpawns = this.spawns.getOrDefault(creation.mapId(), Map.of());
@@ -132,76 +211,135 @@ public final class BattleBallManager {
                 Emulator.getConfig().getInt("battleball.idle.warning.seconds", 15));
         if (!game.addPlayer(userId, habbo.getHabboInfo().getUsername(), habbo.getHabboInfo().getMotto(), habbo.getHabboInfo().getLook(),
                 habbo.getHabboInfo().getGender().name(), creation.selectedTeam())) return Result.failed(FAILURE_BAD_TEAM);
-        this.games.put(id, game); this.userGames.put(userId, id); this.lastSequences.put(id, game.sequence()); this.lastStates.put(id, game.state());
+        this.games.put(id, game); this.userGames.put(userId, id); this.lastSequences.put(id, game.sequence());
         // The creator stays in the lounge. In the original game a created game sat in its lobby window
         // gathering players, and only the start of a round took anyone out of the room they were in.
         this.broadcastLobby(game);
         return Result.success(game);
     }
 
-    public synchronized int join(Habbo habbo, int instanceId, int teamId) {
+    public synchronized Result join(Habbo habbo, int instanceId, int teamId) {
+        if (!this.enabled) return Result.failed(FAILURE_NOT_ALLOWED);
         BattleBallGame game = this.games.get(instanceId);
         int userId = habbo.getHabboInfo().getId();
-        if (game == null) return FAILURE_NOT_FOUND;
+        if (game == null) return Result.failed(FAILURE_NOT_FOUND);
+        if (!canDiscover(game, userId)) return Result.failed(FAILURE_NOT_FOUND);
         Integer current = this.userGames.get(userId);
         if (current != null) {
-            // Already in this game: picking another team is a switch, not a second join. Rejecting it
-            // outright meant the team links did nothing at all once a player had joined.
-            if (current != instanceId) return FAILURE_ALREADY_IN_GAME;
-            if (!game.changeTeam(userId, teamId)) return FAILURE_BAD_TEAM;
-            BattleBallPlayer moved = game.players().stream().filter(p -> p.userId() == userId).findFirst().orElse(null);
-            if (moved != null) this.sendToGame(game, ignored -> new BattleBallGamePlayerInfoComposer(instanceId, moved));
-            this.sendFull(game);
-            this.broadcastLobby(game);
-            return -1;
+            if (current != instanceId) return Result.failed(FAILURE_ALREADY_IN_GAME);
+            BattleBallPlayer existingPlayer = game.players().stream()
+                    .filter(player -> player.userId() == userId).findFirst().orElse(null);
+            if (existingPlayer != null) {
+                // Already in this game: picking another team is a switch, not a second join.
+                if (!this.allowRosterMutation(userId, instanceId)) return Result.failed(REQUEST_THROTTLED);
+                if (!game.changeTeam(userId, teamId)) return Result.failed(FAILURE_BAD_TEAM);
+                this.publishLobbyMutation(game);
+                return Result.success(game);
+            }
+            if (!game.watchers().contains(userId)) return Result.failed(FAILURE_NOT_A_PLAYER);
+            if (game.state() != BattleBallState.LOBBY) return Result.failed(FAILURE_BAD_STATE);
+            if (teamId < 0 || teamId >= game.teams().size()) return Result.failed(FAILURE_BAD_TEAM);
+            if (game.teams().get(teamId).full()) return Result.failed(FAILURE_FULL);
+            if (!this.canAffordRound(habbo)) return Result.failed(FAILURE_INSUFFICIENT_TICKETS);
+            if (!this.allowRosterMutation(userId, instanceId)) return Result.failed(REQUEST_THROTTLED);
+            if (!game.addPlayer(userId, habbo.getHabboInfo().getUsername(), habbo.getHabboInfo().getMotto(),
+                    habbo.getHabboInfo().getLook(), habbo.getHabboInfo().getGender().name(), teamId)) {
+                return Result.failed(FAILURE_FULL);
+            }
+            game.removeWatcher(userId);
+            this.publishSpectatorCount(game);
+            this.publishLobbyMutation(game);
+            return Result.success(game);
         }
-        if (game.state() != BattleBallState.LOBBY) return FAILURE_BAD_STATE;
-        if (teamId < 0 || teamId >= game.teams().size()) return FAILURE_BAD_TEAM;
-        if (game.teams().get(teamId).full()) return FAILURE_FULL;
+        if (game.state() != BattleBallState.LOBBY) return Result.failed(FAILURE_BAD_STATE);
+        if (teamId < 0 || teamId >= game.teams().size()) return Result.failed(FAILURE_BAD_TEAM);
+        if (game.teams().get(teamId).full()) return Result.failed(FAILURE_FULL);
+        if (!this.canAffordRound(habbo)) return Result.failed(FAILURE_INSUFFICIENT_TICKETS);
         if (!game.addPlayer(userId, habbo.getHabboInfo().getUsername(), habbo.getHabboInfo().getMotto(), habbo.getHabboInfo().getLook(),
-                habbo.getHabboInfo().getGender().name(), teamId)) return FAILURE_FULL;
+                habbo.getHabboInfo().getGender().name(), teamId)) return Result.failed(FAILURE_FULL);
         this.userGames.put(userId, instanceId);
         // Joining only puts the player in a team; they remain in the lounge until the round starts.
-        BattleBallPlayer joined = game.players().stream().filter(player -> player.userId() == userId).findFirst().orElse(null);
-        if (joined != null) this.sendToGame(game, ignored -> new BattleBallGamePlayerInfoComposer(instanceId, joined));
-        this.broadcastLobby(game); return -1;
+        this.publishLobbyMutation(game); return Result.success(game);
     }
 
     public synchronized int leave(Habbo habbo, int instanceId) {
+        if (!this.enabled) return FAILURE_NOT_ALLOWED;
         BattleBallGame game = this.games.get(instanceId);
         int userId = habbo.getHabboInfo().getId();
+        this.clearRequestsForUser(userId);
         if (game == null) return FAILURE_NOT_FOUND;
         // An owner's explicit Leave/Close terminates their instance in every state. Keeping a running
         // ownerless game alive leaves userGames membership behind and rejects their next creation as
         // "already in a game" even though the client has fully exited the arena.
         if (game.ownerUserId() == userId) {
-            this.deleteInternal(game);
+            game.removePlayer(userId);
+            this.deleteInternal(game, Set.of(userId));
             return -1;
         }
         if (game.removePlayer(userId) == null) {
-            game.removeWatcher(userId);
+            boolean removedWatcher = game.removeWatcher(userId);
             this.userGames.remove(userId, instanceId);
-            this.returnToHotelRoom(userId);
+            if (removedWatcher) this.publishSpectatorCount(game);
             return -1;
         }
         this.userGames.remove(userId, instanceId);
-        this.returnToHotelRoom(userId);
-        this.broadcastLobby(game);
+        this.publishLobbyMutation(game);
         return -1;
     }
 
     public synchronized int kick(Habbo actor, int instanceId, int targetUserId) {
+        if (!this.enabled) return FAILURE_NOT_ALLOWED;
         BattleBallGame game = this.games.get(instanceId);
         if (game == null) return FAILURE_NOT_FOUND;
         if (game.ownerUserId() != actor.getHabboInfo().getId()) return FAILURE_NOT_OWNER;
         if (game.state() != BattleBallState.LOBBY || targetUserId == game.ownerUserId()) return FAILURE_BAD_STATE;
-        if (game.removePlayer(targetUserId) == null) return FAILURE_NOT_A_PLAYER;
+        BattleBallPlayer target = game.players().stream()
+                .filter(player -> player.userId() == targetUserId && !player.isBot()).findFirst().orElse(null);
+        if (target == null) return FAILURE_NOT_A_PLAYER;
+        if (!this.allowRosterMutation(actor.getHabboInfo().getId(), instanceId)) return REQUEST_THROTTLED;
+        this.sendSafely(Emulator.getGameEnvironment().getHabboManager().getHabbo(targetUserId),
+                new BattleBallPlayerRemovedComposer(instanceId, REMOVAL_KICKED), "player removal");
+        game.removePlayer(targetUserId);
         this.userGames.remove(targetUserId, instanceId);
-        this.returnToHotelRoom(targetUserId);
-        this.broadcastLobby(game); return -1;
+        this.publishLobbyMutation(game); return -1;
+    }
+
+    /** Adds one game-scoped bot to a team. Bots never enter userGames because they have no session. */
+    public synchronized int addBot(Habbo actor, int instanceId, int teamId) {
+        if (!this.enabled) return FAILURE_NOT_ALLOWED;
+        BattleBallGame game = this.games.get(instanceId);
+        if (game == null) return FAILURE_NOT_FOUND;
+        if (game.ownerUserId() != actor.getHabboInfo().getId()) return FAILURE_NOT_OWNER;
+        if (game.state() != BattleBallState.LOBBY) return FAILURE_BAD_STATE;
+        if (teamId < 0 || teamId >= game.teams().size()) return FAILURE_BAD_TEAM;
+        if (game.teams().get(teamId).full()) return FAILURE_FULL;
+        if (!this.allowRosterMutation(actor.getHabboInfo().getId(), instanceId)) return REQUEST_THROTTLED;
+        if (!game.addBot(teamId)) return FAILURE_NOT_ALLOWED;
+        // Roster commands are menu interactions, not simulation steps. Publish the compact spawn
+        // delta now instead of making the UI wait for the authoritative 500 ms gameplay loop.
+        this.publishLobbyMutation(game);
+        return -1;
+    }
+
+    /** Removes only a bot; human players continue to use the existing owner kick path. */
+    public synchronized int removeBot(Habbo actor, int instanceId, int botUserId) {
+        if (!this.enabled) return FAILURE_NOT_ALLOWED;
+        BattleBallGame game = this.games.get(instanceId);
+        if (game == null) return FAILURE_NOT_FOUND;
+        if (game.ownerUserId() != actor.getHabboInfo().getId()) return FAILURE_NOT_OWNER;
+        if (game.state() != BattleBallState.LOBBY) return FAILURE_BAD_STATE;
+        BattleBallPlayer bot = game.players().stream()
+                .filter(player -> player.userId() == botUserId && player.isBot()).findFirst().orElse(null);
+        if (bot == null) return FAILURE_NOT_A_PLAYER;
+        if (!this.allowRosterMutation(actor.getHabboInfo().getId(), instanceId)) return REQUEST_THROTTLED;
+        game.removePlayer(botUserId);
+        // removePlayer records a compact despawn event; flush it immediately for the same reason as add.
+        this.publishLobbyMutation(game);
+        return -1;
     }
 
     public synchronized int delete(Habbo actor, int instanceId) {
+        if (!this.enabled) return FAILURE_NOT_ALLOWED;
         BattleBallGame game = this.games.get(instanceId);
         if (game == null) return FAILURE_NOT_FOUND;
         if (game.ownerUserId() != actor.getHabboInfo().getId()) return FAILURE_NOT_OWNER;
@@ -209,130 +347,239 @@ public final class BattleBallManager {
         this.deleteInternal(game); return -1;
     }
 
-    public synchronized int start(Habbo actor, int instanceId) {
+    public int start(Habbo actor, int instanceId) {
+        if (!this.enabled) return FAILURE_NOT_ALLOWED;
         BattleBallGame game = this.games.get(instanceId);
         if (game == null) return FAILURE_NOT_FOUND;
-        int userId = actor.getHabboInfo().getId();
-        if (game.ownerUserId() != userId) return FAILURE_NOT_OWNER;
-        // Treat a repeated Start from the owner as a state-resync request. A delayed/doubled UI click can
-        // arrive after the first request has already moved the authoritative game into COUNTDOWN; returning
-        // BAD_STATE leaves only that host displaying the lobby while every other participant starts. A full
-        // snapshot is idempotent and repairs either COUNTDOWN or RUNNING without restarting the round.
-        if (game.state() == BattleBallState.COUNTDOWN || game.state() == BattleBallState.RUNNING) {
-            this.sendFull(actor, game);
-            return -1;
-        }
-        if (game.state() != BattleBallState.LOBBY) return FAILURE_BAD_STATE;
-        if (!game.canStart(userId)) return FAILURE_NOT_ENOUGH_TEAMS;
-        List<Habbo> participants = new ArrayList<>();
-        for (BattleBallPlayer player : game.players()) {
-            Habbo habbo = Emulator.getGameEnvironment().getHabboManager().getHabbo(player.userId());
-            if (habbo == null) return FAILURE_BAD_STATE;
-            participants.add(habbo);
-        }
-        BattleBallRepository.ChargeResult charge = this.repository.chargeRound(game, participants, this.currencyType(), this.ticketCost());
-        if (!charge.success()) return FAILURE_INSUFFICIENT_TICKETS;
-        if (!game.start(userId, System.currentTimeMillis())) return FAILURE_BAD_STATE;
-        // Everyone leaves their room together, at the moment the round begins rather than when they
-        // joined it, so the pre-game lobby window can sit over the lounge the way Shockwave's did.
-        for (Habbo habbo : participants) this.enterArena(habbo);
-        for (Habbo habbo : participants) {
-            Integer balance = charge.balances().get(habbo.getHabboInfo().getId());
-            if (balance != null) {
-                habbo.getHabboInfo().applyCommittedCurrencyBalance(this.currencyType(), balance);
-                int charged = charge.costs().getOrDefault(habbo.getHabboInfo().getId(), this.ticketCost());
-                habbo.getClient().sendResponse(new HabboActivityPointNotificationMessageComposer(balance, -charged, this.currencyType()));
+        if (!this.startingGames.add(instanceId)) return -1;
+        try {
+            synchronized (game) {
+                if (this.games.get(instanceId) != game) return FAILURE_NOT_FOUND;
+                int userId = actor.getHabboInfo().getId();
+                if (game.ownerUserId() != userId) return FAILURE_NOT_OWNER;
+                // A repeated Start is an idempotent success. The sequenced status stream performs recovery; a
+                // duplicate UI click must not broadcast another full arena snapshot.
+                if (game.state() == BattleBallState.COUNTDOWN || game.state() == BattleBallState.RUNNING) return -1;
+                if (game.state() != BattleBallState.LOBBY) return FAILURE_BAD_STATE;
+                if (!game.canStart(userId)) return FAILURE_NOT_ENOUGH_TEAMS;
+                boolean requiresHumanOpponent = Emulator.getConfig().getBoolean(
+                        "battleball.ranked.requires.human.opponent", true);
+                boolean rankedRound = game.rankedEligible(requiresHumanOpponent);
+                List<Habbo> participants = new ArrayList<>();
+                for (BattleBallPlayer player : game.players()) {
+                    if (player.isBot()) continue;
+                    Habbo habbo = Emulator.getGameEnvironment().getHabboManager().getHabbo(player.userId());
+                    if (habbo == null) return FAILURE_BAD_STATE;
+                    participants.add(habbo);
+                }
+                BattleBallRepository.ChargeResult charge = withWalletLocks(participants, 0, () -> {
+                    BattleBallRepository.ChargeResult committed = this.repository.chargeRound(
+                            game, participants, this.currencyType(), this.ticketCost(), rankedRound);
+                    if (committed.success()) {
+                        for (Habbo habbo : participants) {
+                            Integer balance = committed.balances().get(habbo.getHabboInfo().getId());
+                            if (balance != null) {
+                                habbo.getHabboInfo().applyCommittedCurrencyBalance(this.currencyType(), balance);
+                            }
+                        }
+                    }
+                    return committed;
+                });
+                if (!charge.success()) return switch (charge.status()) {
+                    case INSUFFICIENT_TICKETS -> FAILURE_INSUFFICIENT_TICKETS;
+                    case REJECTED -> FAILURE_NOT_ALLOWED;
+                    default -> FAILURE_UNKNOWN;
+                };
+                if (!game.start(userId, System.currentTimeMillis(), rankedRound, requiresHumanOpponent)) {
+                    LOGGER.error("BattleBall -> Charged instance {} but its protected start transition failed.", instanceId);
+                    return FAILURE_UNKNOWN;
+                }
+                // Everyone leaves their room together, at the moment the round begins rather than when they
+                // joined it, so the pre-game lobby window can sit over the lounge the way Shockwave's did.
+                for (Habbo habbo : participants) this.leaveLounge(habbo.getHabboInfo().getId());
+                for (Habbo habbo : participants) {
+                    Integer balance = charge.balances().get(habbo.getHabboInfo().getId());
+                    if (balance != null) {
+                        int charged = charge.costs().getOrDefault(habbo.getHabboInfo().getId(), this.ticketCost());
+                        this.sendSafely(habbo, new HabboActivityPointNotificationMessageComposer(
+                                balance, -charged, this.currencyType()), "round ticket charge");
+                        this.sendSafely(habbo, new BattleBallTicketBalanceComposer(balance),
+                                "round ticket balance");
+                    }
+                }
+                this.sendToGame(game, ignored -> new BattleBallGameStartComposer(game));
+                return -1;
             }
+        } finally {
+            this.startingGames.remove(instanceId);
         }
-        this.sendToGame(game, ignored -> new BattleBallGameStartComposer(game));
-        this.sendFull(game);
-        this.lastSequences.put(game.id(), game.sequence());
-        return -1;
     }
 
     public int move(Habbo habbo, int instanceId, int x, int y) {
+        if (!this.enabled) return FAILURE_NOT_ALLOWED;
         BattleBallGame game = this.games.get(instanceId);
         if (game == null) return FAILURE_NOT_FOUND;
-        return game.requestMove(habbo.getHabboInfo().getId(), x, y, System.currentTimeMillis()) ? -1 : FAILURE_NOT_ALLOWED;
+        long now = System.currentTimeMillis();
+        if (!this.allowRequest(habbo.getHabboInfo().getId(), instanceId, RequestAction.MOVE, now, MOVE_INTERVAL_MS)) {
+            return FAILURE_NOT_ALLOWED;
+        }
+        return game.requestMove(habbo.getHabboInfo().getId(), x, y, now) ? -1 : FAILURE_NOT_ALLOWED;
     }
 
     public int activate(Habbo habbo, int instanceId, int powerObjectId) {
+        if (!this.enabled) return FAILURE_NOT_ALLOWED;
         BattleBallGame game = this.games.get(instanceId);
         if (game == null) return FAILURE_NOT_FOUND;
-        return game.activatePower(habbo.getHabboInfo().getId(), powerObjectId, System.currentTimeMillis()) ? -1 : FAILURE_NOT_ALLOWED;
+        long now = System.currentTimeMillis();
+        if (!this.allowRequest(habbo.getHabboInfo().getId(), instanceId, RequestAction.ACTIVATE, now, ACTIVATE_INTERVAL_MS)) {
+            return FAILURE_NOT_ALLOWED;
+        }
+        return game.activatePower(habbo.getHabboInfo().getId(), powerObjectId, now) ? -1 : FAILURE_NOT_ALLOWED;
     }
 
-    public int watch(Habbo habbo, int instanceId) {
+    public synchronized int watch(Habbo habbo, int instanceId) {
+        if (!this.enabled) return FAILURE_NOT_ALLOWED;
+        if (instanceId < 0) {
+            BattleBallFinishedGame finished = this.finishedGames.get(-instanceId);
+            if (finished == null || !finished.visibleTo(habbo.getHabboInfo().getId())) return FAILURE_NOT_FOUND;
+            this.sendSafely(habbo, new BattleBallGameInstanceComposer(finished), "finished game results");
+            return -1;
+        }
         BattleBallGame game = this.games.get(instanceId);
         if (game == null) return FAILURE_NOT_FOUND;
-        if (game.watchers().size() >= Emulator.getConfig().getInt("battleball.max.spectators", 50)) return FAILURE_FULL;
         int userId = habbo.getHabboInfo().getId();
+        if (!canDiscover(game, userId)) return FAILURE_NOT_FOUND;
+        if (game.state() != BattleBallState.COUNTDOWN && game.state() != BattleBallState.RUNNING) {
+            return FAILURE_BAD_STATE;
+        }
+        if (game.watchers().size() >= Emulator.getConfig().getInt("battleball.max.spectators", 50)) return FAILURE_FULL;
         Integer existing = this.userGames.putIfAbsent(userId, instanceId);
         if (existing != null) return FAILURE_ALREADY_IN_GAME;
-        this.enterArena(habbo);
+        this.leaveLounge(userId);
         game.addWatcher(userId);
-        habbo.getClient().sendResponse(new BattleBallGameLocationComposer(game, true));
-        this.sendFull(habbo, game); return -1;
+        this.sendSafely(habbo, new BattleBallGameLocationComposer(game, true), "spectator location");
+        this.publishSpectatorCount(game);
+        return -1;
     }
 
-    public void unwatch(Habbo habbo, int instanceId) {
-        int userId = habbo.getHabboInfo().getId();
-        BattleBallGame game = this.games.get(instanceId); if (game != null) game.removeWatcher(userId);
-        this.userGames.remove(userId, instanceId);
-        this.returnToHotelRoom(userId);
-    }
+    /** Original ticket shop: 2 tickets for 1 credit, or 20 tickets for 6 credits, optionally gifted. */
+    public void buyTickets(Habbo buyer, int bundleId, String recipientName) {
+        if (!this.enabled || buyer == null || buyer.getHabboInfo() == null || buyer.getClient() == null) return;
+        int creditCost;
+        int ticketsAdded;
+        if (bundleId == 1) { creditCost = 1; ticketsAdded = 2; }
+        else if (bundleId == 2) { creditCost = 6; ticketsAdded = 20; }
+        else {
+            this.sendSafely(buyer, new BattleBallTicketPurchaseResultComposer(
+                    PURCHASE_INVALID_BUNDLE, "", 0), "invalid ticket purchase");
+            return;
+        }
+        Habbo onlineRecipient = recipientName == null || recipientName.isBlank()
+                ? buyer : Emulator.getGameEnvironment().getHabboManager().getHabbo(recipientName.trim());
+        List<Habbo> walletOwners = onlineRecipient == null || onlineRecipient == buyer
+                ? List.of(buyer) : List.of(buyer, onlineRecipient);
+        BattleBallRepository.PurchaseResult result = withWalletLocks(walletOwners, 0, () -> {
+            BattleBallRepository.PurchaseResult committed = this.repository.purchaseTickets(
+                    buyer.getHabboInfo().getId(), recipientName, this.currencyType(), creditCost, ticketsAdded);
+            if (committed.success()) {
+                buyer.getHabboInfo().applyCommittedCreditBalance(committed.creditsRemaining());
+                if (onlineRecipient != null
+                        && onlineRecipient.getHabboInfo().getId() == committed.recipientUserId()) {
+                    onlineRecipient.getHabboInfo().applyCommittedCurrencyBalance(
+                            this.currencyType(), committed.ticketBalance());
+                }
+            }
+            return committed;
+        });
+        if (!result.success()) {
+            this.sendSafely(buyer, new BattleBallTicketPurchaseResultComposer(
+                    result.status(), "", 0), "ticket purchase failure");
+            return;
+        }
 
-    public int rejoin(Habbo habbo, int instanceId) {
-        BattleBallGame game = this.games.get(instanceId);
-        if (game == null) return FAILURE_NOT_FOUND;
-        if (!game.rejoin(habbo.getHabboInfo().getId())) return FAILURE_NOT_A_PLAYER;
-        this.userGames.put(habbo.getHabboInfo().getId(), instanceId);
-        habbo.getClient().sendResponse(new BattleBallSignalComposer(Outgoing.BattleBallPlayerRejoinedComposer, instanceId, habbo.getHabboInfo().getId()));
-        this.sendFull(habbo, game); return -1;
+        this.sendSafely(buyer, new CreditBalanceMessageComposer(buyer), "credit balance");
+        Habbo recipient = Emulator.getGameEnvironment().getHabboManager().getHabbo(result.recipientUserId());
+        if (recipient != null) {
+            if (recipient != onlineRecipient) {
+                synchronized (recipient.getHabboInfo()) {
+                    recipient.getHabboInfo().applyCommittedCurrencyBalance(this.currencyType(), result.ticketBalance());
+                }
+            }
+            this.sendSafely(recipient, new BattleBallTicketBalanceComposer(result.ticketBalance()),
+                    "purchased ticket balance");
+            this.sendSafely(recipient, new HabboActivityPointNotificationMessageComposer(
+                    result.ticketBalance(), result.ticketsAdded(), this.currencyType()), "ticket activity points");
+        }
+        this.sendSafely(buyer, new BattleBallTicketPurchaseResultComposer(PURCHASE_OK,
+                result.recipientName(), result.ticketsAdded()), "ticket purchase result");
     }
 
     public void requestFull(Habbo habbo, int instanceId) {
+        if (!this.enabled) return;
         BattleBallGame game = this.games.get(instanceId);
-        if (game != null && this.hasArenaAccess(habbo, game)) this.sendFull(habbo, game);
+        if (game == null || !this.hasArenaAccess(habbo, game)) return;
+        long now = System.currentTimeMillis();
+        if (this.allowRequest(habbo.getHabboInfo().getId(), instanceId,
+                RequestAction.FULL_STATUS, now, FULL_STATUS_INTERVAL_MS)) this.sendFull(habbo, game);
     }
 
     public synchronized void disconnected(int userId) {
+        this.lounge.remove(userId);
+        this.clearRequestsForUser(userId);
         Integer instanceId = this.userGames.get(userId); if (instanceId == null) return;
-        // A disconnected client cannot consume a RoomForward packet. Forget its return target while
-        // still releasing every other participant if this disconnect terminates the instance.
-        this.returnRooms.remove(userId);
         BattleBallGame game = this.games.get(instanceId);
         if (game == null) {
             this.userGames.remove(userId, instanceId);
             return;
         }
-        // Closing the client is a definitive leave. Retaining an unreachable player for a reconnect grace
-        // period creates a ghost which cannot move and leaves the two clients with different player sets.
+        // Closing the client is a definitive leave; retaining it would create an unreachable ghost and
+        // leave the remaining clients with a different player set.
         if (game.ownerUserId() == userId) {
-            this.deleteInternal(game);
+            game.removePlayer(userId);
+            this.deleteInternal(game, Set.of(userId));
             return;
         }
-        game.removePlayer(userId);
-        game.removeWatcher(userId);
+        boolean removedPlayer = game.removePlayer(userId) != null;
+        boolean removedWatcher = game.removeWatcher(userId);
         this.userGames.remove(userId, instanceId);
-        this.broadcastLobby(game);
+        if (removedWatcher) this.publishSpectatorCount(game);
+        if (removedPlayer) this.publishLobbyMutation(game);
     }
 
     public synchronized void dispose() {
         this.enabled = false;
         if (this.tickTask != null) this.tickTask.cancel(false);
-        this.games.values().forEach(BattleBallGame::dispose); this.games.clear(); this.userGames.clear(); this.returnRooms.clear();
-        this.lastSequences.clear(); this.lastStates.clear();
+        for (BattleBallGame game : List.copyOf(this.games.values())) {
+            if (game.state() != BattleBallState.LOBBY) {
+                this.persistRoundAsync(BattleBallRoundResult.capture(game, true), false);
+            }
+            game.dispose();
+        }
+        this.games.clear(); this.userGames.clear(); this.lounge.clear();
+        this.lastSequences.clear(); this.startingGames.clear(); this.requestTimestamps.clear(); this.tickFailures.clear();
+        this.persistenceExecutor.shutdown();
+        try {
+            if (!this.persistenceExecutor.awaitTermination(30, TimeUnit.SECONDS)) {
+                LOGGER.error("BattleBall -> Persistence worker did not drain within 30 seconds during shutdown.");
+            }
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            LOGGER.error("BattleBall -> Interrupted while draining persistence during shutdown.", exception);
+        }
     }
 
     private void tick() {
         if (!this.enabled) return;
         long now = System.currentTimeMillis();
-        try {
-            for (BattleBallGame game : List.copyOf(this.games.values())) {
+        for (BattleBallGame game : List.copyOf(this.games.values())) {
+            if (this.games.get(game.id()) != game) continue;
+            if (this.startingGames.contains(game.id())) continue;
+            try {
                 Set<Integer> recipientsBeforeTick = this.recipientIds(game);
                 BattleBallState before = game.state();
                 game.tick(now);
+                if (this.games.get(game.id()) != game) continue;
+                Set<Integer> idleRemovals = game.consumeIdleRemovals();
                 boolean ownerPresent = game.players().stream().anyMatch(player -> player.userId() == game.ownerUserId());
                 if (!ownerPresent) {
                     // Owner leave, disconnect and idle removal all have the same terminal meaning. Do not
@@ -340,49 +587,82 @@ public final class BattleBallManager {
                     this.deleteInternal(game, recipientsBeforeTick);
                     continue;
                 }
+                for (int removedUserId : idleRemovals) {
+                    this.userGames.remove(removedUserId, game.id());
+                    Habbo removed = Emulator.getGameEnvironment().getHabboManager().getHabbo(removedUserId);
+                    this.sendSafely(removed, new BattleBallPlayerRemovedComposer(game.id(), REMOVAL_IDLE),
+                            "idle player removal");
+                }
                 for (Map.Entry<Integer, Integer> warning : game.consumeIdleWarnings().entrySet()) {
                     Habbo warned = Emulator.getGameEnvironment().getHabboManager().getHabbo(warning.getKey());
-                    if (warned != null) warned.getClient().sendResponse(new BattleBallSignalComposer(
-                            Outgoing.BattleBallIdleWarningComposer, game.id(), warning.getValue()));
+                    this.sendSafely(warned, new BattleBallSignalComposer(
+                            Outgoing.BattleBallIdleWarningComposer, game.id(), warning.getValue()), "idle warning");
                 }
                 this.reconcileMembership(game);
                 BattleBallState after = game.state();
+                // The lounge list carries each game's state, but only membership changes used to
+                // refresh it. A game starting is a tick transition, so every list still showed it
+                // waiting in its lobby: clicking one opened a "not started yet" view of a round
+                // already in progress, and only re-entering the room fixed it.
+                if (after != before && after != BattleBallState.ENDING) this.broadcastLobby(game);
                 if (after == BattleBallState.ENDING && before != BattleBallState.ENDING) {
-                    this.repository.saveResults(game);
+                    BattleBallRoundResult result = BattleBallRoundResult.capture(game, game.roundAborted());
+                    this.persistRoundAsync(result, !result.aborted());
                     this.sendToRecipients(game, recipientsBeforeTick, ignored -> new BattleBallGameEndComposer(game));
-                    for (BattleBallPlayer player : game.players()) {
-                        Habbo participant = Emulator.getGameEnvironment().getHabboManager().getHabbo(player.userId());
-                        if (participant != null) participant.getClient().sendResponse(new BattleBallSignalComposer(
-                                Outgoing.BattleBallSkillLevelChangedComposer, this.repository.skillLevel(player.userId())));
-                    }
                 }
                 // A finished match is NOT torn down on a timer. deleteInternal() ends by forwarding
-                // every participant back to the lounge room, which evicted players from the arena five
-                // seconds after the whistle and took the final standings with it. The game stays in its
-                // reset lobby state until the players leave of their own accord; leave() disposes it and
-                // sends them home, and the ownerless check above still collects abandoned games.
-                int last = this.lastSequences.getOrDefault(game.id(), -1);
-                if (game.sequence() != last) {
-                    BattleBallUpdate update = game.consumeUpdate(now, false);
-                    this.sendToRecipients(game, recipientsBeforeTick, ignored -> new BattleBallGameStatusComposer(game, update, now, last));
-                    this.lastSequences.put(game.id(), game.sequence());
+                // the game five seconds after the whistle and took the final standings with it. The game
+                // stays in its reset lobby state until the players leave of their own accord; the
+                // ownerless check above still collects abandoned games.
+                this.publishPendingStatus(game, recipientsBeforeTick, now);
+                this.tickFailures.remove(game.id());
+            } catch (Exception exception) {
+                int failures = this.tickFailures.merge(game.id(), 1, Integer::sum);
+                LOGGER.error("BattleBall -> Tick failed for instance {} ({}/{} consecutive failures).",
+                        game.id(), failures, MAX_CONSECUTIVE_TICK_FAILURES, exception);
+                if (failures >= MAX_CONSECUTIVE_TICK_FAILURES) {
+                    try {
+                        this.deleteInternal(game, this.recipientIds(game));
+                    } catch (Exception quarantineException) {
+                        LOGGER.error("BattleBall -> Could not quarantine failed instance {}.", game.id(), quarantineException);
+                    }
                 }
-                this.lastStates.put(game.id(), after);
             }
-        } catch (Exception exception) {
-            LOGGER.error("BattleBall -> Authoritative tick failed.", exception);
         }
-    }
-
-    private void sendFull(BattleBallGame game) {
-        long now = System.currentTimeMillis();
-        BattleBallUpdate update = game.consumeUpdate(now, true);
-        this.sendToGame(game, ignored -> new BattleBallFullGameStatusComposer(game, update, now));
     }
 
     private void sendFull(Habbo habbo, BattleBallGame game) {
         long now = System.currentTimeMillis();
-        habbo.getClient().sendResponse(new BattleBallFullGameStatusComposer(game, game.consumeUpdate(now, true), now));
+        this.sendSafely(habbo, new BattleBallFullGameStatusComposer(game, game.consumeUpdate(now, true)),
+                "full status");
+        this.sendSafely(habbo, new BattleBallSpectatorCountComposer(game.id(), game.watchers().size()),
+                "spectator count recovery");
+    }
+
+    /**
+     * Publishes a pre-game roster change immediately while preserving the same sequence/event stream
+     * consumed by the gameplay tick. publishPendingStatus locks only this game, so its drain and
+     * lastSequences update are atomic without pausing unrelated matches.
+     */
+    private void publishLobbyMutation(BattleBallGame game) {
+        this.publishPendingStatus(game, Set.of(), System.currentTimeMillis());
+        this.broadcastLobby(game);
+    }
+
+    private void publishSpectatorCount(BattleBallGame game) {
+        this.sendToGame(game, ignored -> new BattleBallSpectatorCountComposer(
+                game.id(), game.watchers().size()));
+    }
+
+    private void publishPendingStatus(BattleBallGame game, Set<Integer> additionalRecipients, long now) {
+        synchronized (game) {
+            int last = this.lastSequences.getOrDefault(game.id(), -1);
+            if (game.sequence() == last) return;
+            BattleBallUpdate update = game.consumeUpdate(now, false);
+            this.sendToRecipients(game, additionalRecipients,
+                    ignored -> new BattleBallGameStatusComposer(game, update, last));
+            this.lastSequences.put(game.id(), update.sequence());
+        }
     }
 
     private boolean hasArenaAccess(Habbo habbo, BattleBallGame game) {
@@ -392,7 +672,22 @@ public final class BattleBallManager {
     }
 
     private void broadcastLobby(BattleBallGame game) {
-        for (Habbo habbo : onlineRecipients()) habbo.getClient().sendResponse(new BattleBallGameInstanceComposer(game));
+        for (Integer userId : List.copyOf(this.lounge)) {
+            Habbo habbo = Emulator.getGameEnvironment().getHabboManager().getHabbo(userId);
+            if (!isInLoungeRoom(habbo)) { this.lounge.remove(userId); continue; }
+            if (!canDiscover(game, habbo.getHabboInfo().getId())) continue;
+            this.sendSafely(habbo, new BattleBallGameInstanceComposer(game), "lobby instance update");
+        }
+    }
+
+    /** A finished row replaces a live running row, so send an authoritative list rather than an upsert. */
+    private void broadcastLoungeLists() {
+        for (Integer userId : List.copyOf(this.lounge)) {
+            Habbo habbo = Emulator.getGameEnvironment().getHabboManager().getHabbo(userId);
+            if (!isInLoungeRoom(habbo)) { this.lounge.remove(userId); continue; }
+            this.sendSafely(habbo, new BattleBallInstanceListComposer(this.instancesFor(habbo)),
+                    "finished instance list");
+        }
     }
 
     private void sendToGame(BattleBallGame game, java.util.function.Function<Habbo, MessageComposer> composer) {
@@ -401,7 +696,8 @@ public final class BattleBallManager {
 
     private Set<Integer> recipientIds(BattleBallGame game) {
         Set<Integer> recipients = new HashSet<>(game.watchers());
-        game.players().forEach(player -> recipients.add(player.userId()));
+        game.players().stream().filter(player -> !player.isBot())
+                .forEach(player -> recipients.add(player.userId()));
         return recipients;
     }
 
@@ -411,7 +707,8 @@ public final class BattleBallManager {
         recipients.addAll(additionalRecipients);
         for (int userId : recipients) {
             Habbo habbo = Emulator.getGameEnvironment().getHabboManager().getHabbo(userId);
-            if (habbo != null && habbo.getClient() != null) habbo.getClient().sendResponse(composer.apply(habbo));
+            if (habbo == null) continue;
+            this.sendSafely(habbo, composer.apply(habbo), "instance " + game.id() + " update");
         }
     }
 
@@ -419,6 +716,7 @@ public final class BattleBallManager {
         List<Habbo> result = new ArrayList<>();
         for (BattleBallGame game : this.games.values()) {
             for (BattleBallPlayer player : game.players()) {
+                if (player.isBot()) continue;
                 Habbo habbo = Emulator.getGameEnvironment().getHabboManager().getHabbo(player.userId());
                 if (habbo != null && !result.contains(habbo)) result.add(habbo);
             }
@@ -431,7 +729,7 @@ public final class BattleBallManager {
         // dropped as they are found so the set cannot grow without bound across sessions.
         for (Integer userId : this.lounge) {
             Habbo habbo = Emulator.getGameEnvironment().getHabboManager().getHabbo(userId);
-            if (habbo == null) { this.lounge.remove(userId); continue; }
+            if (!isInLoungeRoom(habbo)) { this.lounge.remove(userId); continue; }
             if (!result.contains(habbo)) result.add(habbo);
         }
         return result;
@@ -442,9 +740,16 @@ public final class BattleBallManager {
     }
 
     private void deleteInternal(BattleBallGame game, Set<Integer> additionalRecipients) {
+        if (!this.games.remove(game.id(), game)) return;
+        // A round past the lobby has already been charged. Close it before the game disappears, or the
+        // tickets are gone with no result, no stats and battleball_rounds.ended_at left NULL forever.
+        if (game.state() != BattleBallState.LOBBY) {
+            this.persistRoundAsync(BattleBallRoundResult.capture(game, true), false);
+        }
         Set<Integer> participants = this.recipientIds(game);
         participants.addAll(additionalRecipients);
-        this.games.remove(game.id()); this.lastSequences.remove(game.id()); this.lastStates.remove(game.id());
+        this.lastSequences.remove(game.id()); this.tickFailures.remove(game.id());
+        this.clearRequestsForGame(game.id());
         participants.forEach(userId -> this.userGames.remove(userId, game.id()));
         this.sendToRecipients(game, additionalRecipients,
                 ignored -> new BattleBallSignalComposer(Outgoing.BattleBallGameDeletedComposer, game.id()));
@@ -452,52 +757,144 @@ public final class BattleBallManager {
         // Without this an owner cancelling their game left it listed for every other player in the
         // lounge until they re-entered the room.
         Set<Integer> notified = new HashSet<>(participants);
-        for (Habbo habbo : this.onlineRecipients()) {
-            if (notified.add(habbo.getHabboInfo().getId())) {
-                habbo.getClient().sendResponse(
-                        new BattleBallSignalComposer(Outgoing.BattleBallGameDeletedComposer, game.id()));
+        try {
+            for (Habbo habbo : this.onlineRecipients()) {
+                if (!notified.add(habbo.getHabboInfo().getId())) continue;
+                this.sendSafely(habbo,
+                        new BattleBallSignalComposer(Outgoing.BattleBallGameDeletedComposer, game.id()),
+                        "instance deletion");
             }
+        } finally {
+            game.dispose();
         }
-        game.dispose();
-        participants.forEach(this::returnToHotelRoom);
     }
 
     private void reconcileMembership(BattleBallGame game) {
         Set<Integer> current = new HashSet<>();
-        game.players().forEach(player -> current.add(player.userId()));
+        game.players().stream().filter(player -> !player.isBot())
+                .forEach(player -> current.add(player.userId()));
         current.addAll(game.watchers());
         List<Integer> removed = this.userGames.entrySet().stream()
                 .filter(entry -> entry.getValue() == game.id() && !current.contains(entry.getKey()))
                 .map(Map.Entry::getKey).toList();
-        removed.forEach(userId -> {
-            this.userGames.remove(userId, game.id());
-            this.returnToHotelRoom(userId);
-        });
+        removed.forEach(userId -> this.userGames.remove(userId, game.id()));
     }
 
-    private void enterArena(Habbo habbo) {
-        if (habbo == null || habbo.getHabboInfo() == null) return;
-        int userId = habbo.getHabboInfo().getId();
-        Room currentRoom = habbo.getHabboInfo().getCurrentRoom();
-        if (currentRoom == null) return;
-        this.returnRooms.putIfAbsent(userId, currentRoom.getId());
-        // Close the ordinary room connection before the BattleBall location composer opens the arena.
-        Emulator.getGameEnvironment().getRoomManager().leaveRoom(habbo, currentRoom, true);
+    private int ticketBalance(Habbo habbo) {
+        return habbo == null || habbo.getHabboInfo() == null ? 0
+                : Math.max(0, habbo.getHabboInfo().getCurrencyAmount(this.currencyType()));
     }
 
-    private void returnToHotelRoom(int userId) {
-        Integer roomId = this.returnRooms.remove(userId);
-        if (roomId == null || roomId <= 0) return;
-        Habbo habbo = Emulator.getGameEnvironment().getHabboManager().getHabbo(userId);
-        if (habbo == null || habbo.getClient() == null) return;
-        habbo.goToRoom(roomId);
+    private static boolean isInLoungeRoom(Habbo habbo) {
+        return habbo != null && habbo.getClient() != null && habbo.getHabboInfo() != null
+                && habbo.getHabboInfo().getCurrentRoom() != null
+                && habbo.getHabboInfo().getCurrentRoom().getLayout() != null
+                && LOUNGE_MODEL.equalsIgnoreCase(habbo.getHabboInfo().getCurrentRoom().getLayout().getName());
+    }
+
+    private boolean canAffordRound(Habbo habbo) {
+        return this.ticketBalance(habbo) >= this.ticketCost();
     }
 
     private static boolean valid(Creation creation) {
         if (creation == null || creation.name() == null || creation.name().trim().isEmpty() || creation.name().trim().length() > 32
                 || creation.mapId() < 1 || creation.mapId() > 5 || creation.roundSeconds() < 60 || creation.roundSeconds() > 600
-                || creation.teamCount() < 2 || creation.teamCount() > 4 || creation.teamCapacity() < 1 || creation.teamCapacity() > 5
+                || creation.teamCount() < 2 || creation.teamCount() > 4 || creation.teamCapacity() < 1
+                || creation.teamCapacity() > BattleBallGame.maxTeamCapacity(creation.teamCount())
                 || creation.selectedTeam() < 0 || creation.selectedTeam() >= creation.teamCount() || creation.powers() == null || creation.powers().size() > 8) return false;
         return creation.powers().stream().allMatch(power -> power != null && power.id() >= 1 && power.id() <= 8);
+    }
+
+    private void persistRoundAsync(BattleBallRoundResult result, boolean notifySkills) {
+        try {
+            this.persistenceExecutor.execute(() -> {
+                BattleBallFinishedGame finished = null;
+                boolean persisted;
+                if (result.aborted()) persisted = this.repository.abortRound(result);
+                else {
+                    finished = this.repository.saveResults(result);
+                    persisted = finished != null;
+                }
+                if (!persisted) return;
+                if (finished != null) {
+                    this.finishedGames.put(finished.resultId(), finished);
+                    this.trimFinishedGames();
+                    this.broadcastLoungeLists();
+                }
+                if (!notifySkills || !BattleBallRepository.updatesRankedStats(result)) return;
+                for (BattleBallRoundResult.PlayerResult player : result.players()) {
+                    if (player.userId() < 1) continue;
+                    Habbo participant = Emulator.getGameEnvironment().getHabboManager().getHabbo(player.userId());
+                    this.sendSafely(participant, new BattleBallSignalComposer(
+                            Outgoing.BattleBallSkillLevelChangedComposer,
+                            this.repository.skillLevel(player.userId())), "skill-level update");
+                }
+            });
+        } catch (RejectedExecutionException exception) {
+            LOGGER.error("BattleBall -> Rejected persistence for instance {} round {}.",
+                    result.instanceId(), result.roundNumber(), exception);
+        }
+    }
+
+    private void trimFinishedGames() {
+        List<BattleBallFinishedGame> ordered = this.finishedGames.values().stream()
+                .sorted(Comparator.comparingInt(BattleBallFinishedGame::endedAt).reversed()
+                        .thenComparing(Comparator.comparingInt(BattleBallFinishedGame::resultId).reversed()))
+                .toList();
+        for (int index = 15; index < ordered.size(); index++) {
+            BattleBallFinishedGame stale = ordered.get(index);
+            this.finishedGames.remove(stale.resultId(), stale);
+        }
+    }
+
+    private static <T> T withWalletLocks(List<Habbo> habbos, int index, Supplier<T> action) {
+        if (index == 0) {
+            habbos = habbos.stream().filter(habbo -> habbo != null && habbo.getHabboInfo() != null)
+                    .distinct().sorted(Comparator.comparingInt(habbo -> habbo.getHabboInfo().getId())).toList();
+        }
+        if (index >= habbos.size()) return action.get();
+        synchronized (habbos.get(index).getHabboInfo()) {
+            return withWalletLocks(habbos, index + 1, action);
+        }
+    }
+
+    private boolean allowRequest(int userId, int instanceId, RequestAction action, long now, long intervalMs) {
+        RequestKey key = new RequestKey(userId, instanceId, action);
+        AtomicBoolean allowed = new AtomicBoolean(false);
+        this.requestTimestamps.compute(key, (ignored, previous) -> {
+            if (previous == null || now - previous >= intervalMs) {
+                allowed.set(true);
+                return now;
+            }
+            return previous;
+        });
+        return allowed.get();
+    }
+
+    private boolean allowRosterMutation(int userId, int instanceId) {
+        return this.allowRequest(userId, instanceId, RequestAction.ROSTER_MUTATION,
+                System.currentTimeMillis(), ROSTER_MUTATION_INTERVAL_MS);
+    }
+
+    private boolean sendSafely(Habbo habbo, MessageComposer composer, String context) {
+        if (habbo == null || composer == null) return false;
+        int userId = habbo.getHabboInfo() == null ? 0 : habbo.getHabboInfo().getId();
+        try {
+            GameClient client = habbo.getClient();
+            if (client == null) return false;
+            client.sendResponse(composer);
+            return true;
+        } catch (RuntimeException exception) {
+            LOGGER.error("BattleBall -> Could not send {} to user {}.", context, userId, exception);
+            return false;
+        }
+    }
+
+    private void clearRequestsForGame(int instanceId) {
+        this.requestTimestamps.keySet().removeIf(key -> key.instanceId() == instanceId);
+    }
+
+    private void clearRequestsForUser(int userId) {
+        this.requestTimestamps.keySet().removeIf(key -> key.userId() == userId);
     }
 }

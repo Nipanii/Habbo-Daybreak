@@ -164,7 +164,7 @@ public final class WiredManager {
             return;
         }
 
-        LOGGER.info("Initializing Wired Manager...");
+        long millis = System.currentTimeMillis();
 
         // Seed any engine setting the database does not carry yet, so operators
         // can see and tune the limits instead of them living only as code defaults.
@@ -209,8 +209,10 @@ public final class WiredManager {
 
         initialized = true;
         
-        LOGGER.info("Wired Manager initialized - enabled: {}, maxSteps: {}, debug: {}", 
-                enabled, maxSteps, debug);
+        LOGGER.info("Wired Manager -> Loaded! ({} MS, enabled={}, max steps={}, tick={} MS)",
+                System.currentTimeMillis() - millis, enabled, maxSteps,
+                WiredTickService.getInstance().getTickIntervalMs());
+        LOGGER.trace("Wired Manager -> Debug mode: {}.", debug);
     }
 
     /**
@@ -856,7 +858,7 @@ public final class WiredManager {
     public static void setDebugEnabled(boolean enabled) {
         debugEnabled = enabled;
         if (enabled) {
-            LOGGER.info("Wired debug mode ENABLED");
+            LOGGER.trace("Wired Manager -> Debug mode enabled.");
         }
     }
     

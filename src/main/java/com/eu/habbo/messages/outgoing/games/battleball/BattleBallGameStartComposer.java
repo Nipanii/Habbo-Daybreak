@@ -10,6 +10,6 @@ public final class BattleBallGameStartComposer extends MessageComposer {
     public BattleBallGameStartComposer(BattleBallGame game) { this.game = game; }
     @Override protected ServerMessage composeInternal() {
         this.response.init(Outgoing.BattleBallGameStartComposer); this.response.appendInt(this.game.id()); this.response.appendInt(this.game.sequence());
-        this.response.appendInt(3000); this.response.appendInt(this.game.roundSeconds() * 1000); return this.response;
+        this.response.appendShort(3000); this.response.appendShort(this.game.roundSeconds()); return this.response;
     }
 }

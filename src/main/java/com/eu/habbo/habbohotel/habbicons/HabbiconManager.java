@@ -74,6 +74,7 @@ public class HabbiconManager {
     }
 
     public synchronized void reload() {
+        long millis = System.currentTimeMillis();
         this.collections.clear();
         this.habbicons.clear();
         this.enabled = Emulator.getConfig().getBoolean("habbicons.enabled", false);
@@ -83,17 +84,20 @@ public class HabbiconManager {
         this.useCooldownSeconds = Math.max(0, Emulator.getConfig().getInt("habbicons.use.cooldown.seconds", 5));
 
         if (!this.enabled) {
-            LOGGER.info("HabbiconManager -> Disabled. Asset root: {}", this.assetRoot);
+            LOGGER.info("Habbicon Manager -> Disabled by configuration.");
+            LOGGER.debug("Habbicon Manager -> Asset root: {}", this.assetRoot);
             return;
         }
 
         try (Connection connection = Emulator.getDatabase().getDataSource().getConnection()) {
             this.loadCollections(connection);
             this.loadHabbicons(connection);
-            LOGGER.info("HabbiconManager -> Loaded {} collection(s), {} habbicon(s). Asset root: {}", this.collections.size(), this.habbicons.size(), this.assetRoot);
+            LOGGER.info("Habbicon Manager -> Loaded! ({} MS, {} collections, {} habbicons)",
+                    System.currentTimeMillis() - millis, this.collections.size(), this.habbicons.size());
+            LOGGER.debug("Habbicon Manager -> Asset root: {}", this.assetRoot);
         } catch (Exception e) {
             this.enabled = false;
-            LOGGER.error("HabbiconManager -> Failed to load Habbicons; feature disabled until reload.", e);
+            LOGGER.error("Habbicon Manager -> Failed to load; feature disabled until reload.", e);
         }
     }
 

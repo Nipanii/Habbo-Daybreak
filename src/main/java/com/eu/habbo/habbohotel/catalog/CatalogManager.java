@@ -224,7 +224,8 @@ public class CatalogManager {
 
         this.ecotronItem = Emulator.getGameEnvironment().getItemManager().getItem("ecotron_box");
 
-        LOGGER.info("Catalog Manager -> Loaded! ({} MS)", System.currentTimeMillis() - millis);
+        LOGGER.info("Catalog Manager -> Loaded! ({} MS, {} pages, {} Builder's Club mappings)",
+                System.currentTimeMillis() - millis, this.catalogPages.size(), this.buildersClubCatalogRegistry.size());
     }
 
 
@@ -317,7 +318,7 @@ public class CatalogManager {
 
         this.catalogPages.putAll(pages);
 
-        LOGGER.info("Loaded {} Catalog Pages!", this.catalogPages.size());
+        LOGGER.debug("Catalog Manager -> Loaded {} pages.", this.catalogPages.size());
     }
 
 
@@ -406,7 +407,7 @@ public class CatalogManager {
 
     public synchronized void reloadBuildersClubCatalogRegistry() {
         this.buildersClubCatalogRegistry = BuildersClubCatalogRegistry.load(BUILDERS_CLUB_FURNIDATA_URL);
-        LOGGER.info("Loaded {} Builder's Club furnidata mappings", this.buildersClubCatalogRegistry.size());
+        LOGGER.debug("Catalog Manager -> Loaded {} Builder's Club furnidata mappings.", this.buildersClubCatalogRegistry.size());
     }
 
     private void loadClubOffers() {

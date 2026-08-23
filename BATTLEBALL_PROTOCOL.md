@@ -1,21 +1,21 @@
-# Original BattleBall protocol (version 1)
+# Original BattleBall protocol (version 2)
 
-This is the local NGH protocol for the original Shockwave `hh_game_bb` game. It is not
-Battle Banzai. Integers are signed 32-bit values, booleans use the normal Arcturus boolean
-encoding, strings use the normal length-prefixed UTF-8 encoding, and doubles use the normal
-packet double encoding. Every variable-length collection is count-prefixed. Incoming handlers
-must reject invalid counts, identifiers, coordinates, enum values, and trailing payload.
+This is the NGH protocol for the original Shockwave `hh_game_bb` game, not Battle Banzai.
+Version 2 is the only supported format and server/client changes must be deployed atomically. Unless
+specified otherwise, integers are signed 32-bit values, strings use Arcturus length-prefixed UTF-8,
+and booleans use the normal Arcturus one-byte encoding. Receivers reject invalid counts, identifiers,
+coordinates, enum values, versions, and trailing payload.
 
 ## Shared limits and enums
 
-- Protocol version: `1`
-- Instance name: 1–32 characters after trimming
+- Status protocol version: `2`
+- Instance name: 1-32 trimmed characters
 - Map: `1..5`
 - Teams: `2..4`; team IDs are zero-based
-- Players per team: `1..5`
+- Players per team: 2 teams allow `1..6`, 3 teams `1..4`, and 4 teams `1..3` (12 total)
 - Round duration: `60..600` seconds
-- Enabled powers: distinct IDs `1..8`, at most 8 entries. Power `9` is the question-mark
-  pickup and resolves server-side to one enabled power.
+- Enabled powers: distinct IDs `1..8`, at most 8. Power `9` is the question-mark pickup and resolves
+  server-side to one enabled power.
 - Instance state: `0=lobby`, `1=countdown`, `2=running`, `3=ending`, `4=disposed`
 - Tile state: `0=default`, `1=touched`, `2=clicked`, `3=pressed`, `4=sealed`
 - Tile colour: `-2=disabled`, `-1=default`, `0=red`, `1=blue`, `2=yellow`, `3=green`
@@ -24,15 +24,13 @@ must reject invalid counts, identifiers, coordinates, enum values, and trailing 
 - Stable failure reasons: `0=unknown`, `1=not-found`, `2=not-owner`, `3=bad-state`,
   `4=full`, `5=bad-team`, `6=bad-parameters`, `7=insufficient-tickets`,
   `8=already-in-game`, `9=not-enough-teams`, `10=not-a-player`, `11=not-allowed`
+- Player removal reasons: `0=kicked`, `1=idle`
 
 ## Client to server
 
 | Header | Name | Payload |
 |---:|---|---|
 | 7500 | GetInstanceList | none |
-| 7501 | Observe | `instanceId:int` |
-| 7502 | Unobserve | `instanceId:int` |
-| 7503 | InitiateCreate | none; server replies with current lounge/default parameters |
 | 7504 | SetGameParameters | `name:string, mapId:int, roundSeconds:int, teamCount:int, teamCapacity:int, selectedTeam:int, private:boolean, powerCount:int, powerId:int...` |
 | 7505 | Delete | `instanceId:int` |
 | 7506 | InitiateJoin | `instanceId:int` |
@@ -41,96 +39,131 @@ must reject invalid counts, identifiers, coordinates, enum values, and trailing 
 | 7509 | Kick | `instanceId:int, targetUserId:int` |
 | 7510 | Watch | `instanceId:int` |
 | 7511 | Start | `instanceId:int` |
-| 7512 | GameEvent | `instanceId:int, subtype:int`, then subtype `2`: `x:int,y:int`; subtype `4`: `powerId:int` |
-| 7513 | Rejoin | `instanceId:int` |
-| 7514 | RequestFullStatus | `instanceId:int, lastSequence:int` |
+| 7512 | GameEvent | `instanceId:int, subtype:int`, then subtype `2`: `x:int,y:int`; subtype `4`: `powerObjectId:int` |
+| 7514 | RequestFullStatus | `instanceId:int` |
+| 7515 | BuyTickets | `bundleId:int, recipient:string` (empty recipient means self) |
+| 7516 | AddBot | `instanceId:int, teamId:int` |
+| 7517 | RemoveBot | `instanceId:int, botUserId:int` |
 
-Movement coordinates and power activation are requests only. Arcturus remains authoritative for
-walkability, movement, tile ownership, pickup ownership, effects, scoring, and match state.
+Movement and power activation are requests only. Arcturus remains authoritative for paths, tile
+ownership, pickup ownership, effects, scoring, and match state.
 
 ## Server to client
 
-All instance-bearing messages identify the `instanceId`. Snapshot and delta messages additionally
-carry a monotonically increasing mutation `sequence`. One 500 ms delta may aggregate several
-mutations and therefore advance by more than one. A delta also carries the preceding
-`baseSequence`; the client applies it only when that value equals its current sequence. A mismatch
-requests 7514/7612 recovery. Stale/duplicate sequences are ignored.
+All game-bearing messages carry `instanceId`. Status packets carry a monotonically increasing
+mutation `sequence`; a 500 ms delta may aggregate multiple mutations. A delta also carries the
+server's global per-game `baseSequence`. Stale or duplicate mutation sequences are ignored. A base
+at or behind the client's current sequence is safe because the client already holds that state; only
+a base ahead of the client proves a gap and requests a throttled 7514/7612 recovery snapshot.
 
 | Header | Name | Payload |
 |---:|---|---|
-| 7600 | LoungeInfo | `protocolVersion:int, ticketCurrencyType:int, ticketCost:int, playerSkillLevel:int` |
-| 7601 | InstanceList | `count:int`, then instance summaries |
+| 7600 | LoungeInfo | `protocolVersion:int, ticketCost:int, playerSkillLevel:int, ticketBalance:int` |
+| 7601 | InstanceList | `count:short`, then instance summaries |
 | 7602 | GameInstance | one instance summary |
 | 7603 | InstanceNotAvailable | `instanceId:int, reason:int` |
-| 7604 | GameParameters | `instanceId:int` plus the accepted creation parameters |
 | 7605 | CreateFailed | `reason:int` |
 | 7606 | GameDeleted | `instanceId:int` |
-| 7607 | JoinParameters | `instanceId:int, teamCount:int`, then `teamId:int, playerCount:int, capacity:int` |
+| 7607 | JoinParameters | `instanceId:int, teamCount:byte, teamCapacity:byte, playerCount:byte[teamCount]` (team IDs are implicit) |
 | 7608 | JoinFailed | `instanceId:int, reason:int` |
 | 7609 | WatchFailed | `instanceId:int, reason:int` |
-| 7610 | GameLocation | `instanceId:int, mapId:int, spectator:boolean` |
+| 7610 | GameLocation | `instanceId:int, mapId:byte, spectator:boolean` |
 | 7611 | StartFailed | `instanceId:int, reason:int` |
 | 7612 | FullGameStatus | full snapshot below |
 | 7613 | GameStatus | delta below |
-| 7614 | PlayerRejoined | `instanceId:int, userId:int` |
-| 7615 | GameStart | `instanceId:int, sequence:int, countdownMs:int, roundMs:int` |
-| 7616 | GameEnd | `instanceId:int, sequence:int, winningTeam:int, scoreCount:int`, then team scores |
-| 7617 | GameReset | `instanceId:int, sequence:int` |
-| 7618 | GamePlayerInfo | `instanceId:int` plus one player object |
+| 7614 | PlayerRemoved | `instanceId:int, reason:int` |
+| 7615 | GameStart | `instanceId:int, sequence:int, countdownMs:short, roundSeconds:short` |
+| 7616 | GameEnd | `instanceId:int, sequence:int, winningTeam:byte, endingMs:int`, team scores, then player scores |
+| 7617 | SpectatorCount | `instanceId:int, watcherCount:int` |
 | 7619 | IdleWarning | `instanceId:int, secondsRemaining:int` |
 | 7620 | SkillLevelChanged | `skillLevel:int` |
+| 7621 | TicketBalance | `ticketBalance:int` |
+| 7622 | TicketPurchaseResult | `status:int, recipient:string, ticketsAdded:int` |
 
 An instance summary is:
 
-`instanceId:int, name:string, ownerUserId:int, ownerName:string, mapId:int, state:int,
-private:boolean, teamCount:int, playerCount:int, capacity:int, roundSeconds:int`
+`instanceId:int, name:string, ownerUserId:int, ownerName:string, mapId:byte, state:byte,
+private:boolean, teamCount:byte, playerCount:byte, capacity:byte, roundSeconds:short`
 
-### Full snapshot (7612)
+Team scores are `count:byte`, followed by `(teamId:byte, score:int)`. Final player scores are
+`count:short`, followed by `(userId:int, score:int)`; negative user IDs are match-local bots.
+An aborted round uses `winningTeam=-1`, remains recorded for ticket/accounting reconciliation, and
+does not update ranked player aggregates, skill levels, or the Games Hall leaderboard.
 
-`protocolVersion:int, instanceId:int, baseSequence:int, sequence:int, state:int, timeRemainingMs:int,
-stateDurationMs:int, objectCount:int, objects..., width:int, height:int, tileCount:int,
-tiles..., scoreCount:int, (teamId:int,score:int)..., eventCount:int, events...`
+## Full snapshot (7612)
 
-Objects begin with `objectType:int`:
+```text
+protocolVersion:int, instanceId:int, sequence:int, state:int, timeRemainingMs:int,
+objectCount:short, fullObject[objectCount], width:int, height:int,
+packedTile:short[width*height], teamScores
+```
 
-- `0` player: `objectId:int, userId:int, x:int, y:int, z:double, direction:int,
-  playerState:int, colouringForOpponentObjectId:int, name:string, motto:string,
-  figure:string, sex:string, teamId:int, roomIndex:int`
-- `1` pickup: `objectId:int, ttlTicks:int, holderObjectId:int, powerType:int,
-  x:int, y:int, z:double`
-- `2` pin: `objectId:int, x:int, y:int, z:double, ttlTicks:int`
+Full object records start with `objectType:byte`:
 
-Each tile is `x:int, y:int, colour:int, state:int, floorHeight:int`. `tileCount` must equal
-`width*height`; disabled map cells are transmitted so the client can build a deterministic grid.
-`floorHeight` is the cell's level from the map heightmap, in original map units. Arenas are
-multi-level, and the client raises both the tile and whatever stands on it by that many units, so
-it must be present on every tile in both the snapshot and the delta.
+- Player `0`: `objectId:int, userId:int, x:byte, y:byte, direction:byte, playerState:byte,
+  colouringForUserId:int, name:string, figure:string, teamId:byte`
+- Pickup `1`: `objectId:int, holderObjectId:int, powerType:byte, secondsRemaining:byte, x:byte, y:byte`
+- Pin `2`: `objectId:int, x:byte, y:byte`
 
-### Delta (7613)
+Motto, sex, room index, TTL, and Z are deliberately absent. They are not used by BattleBall; Z is
+derived from immutable map geometry client-side.
 
-`protocolVersion:int, instanceId:int, sequence:int, state:int, timeRemainingMs:int,
-objectCount:int, objects..., priorityTileCount:int, tiles..., fillTileCount:int, tiles...,
-scoreCount:int, (teamId:int,score:int)..., eventCount:int, events...`
+Full tiles are dense row-major values, so coordinates and count are implicit. Each positive short
+packs `colour + 2` in bits 0..2, tile state in bits 3..5, floor height in bits 6..9, and walkability
+in bit 10. Bits 11..15 must be zero. A 28x28 board therefore costs 1,568 bytes for its tile section.
 
-Priority tiles are direct landings/power effects and animate before flood-fill tiles. Object entries
-are complete current objects rather than partial field patches. Events begin with `eventType:int`:
+## Delta (7613)
 
-- `0` spawn: one complete object
-- `1` despawn: `objectId:int`
-- `2` movement accepted: `playerObjectId:int, goalX:int, goalY:int`
-- `3` pickup: `playerObjectId:int, pickupObjectId:int, powerType:int`
-- `4` player state: `playerObjectId:int, playerState:int, durationMs:int`
-- `5` activation: `playerObjectId:int, pickupObjectId:int, effectDirection:int, powerType:int`
+```text
+protocolVersion:int, instanceId:int, baseSequence:int, sequence:int, state:int,
+timeRemainingMs:int,
+spawnCount:short, fullObject[spawnCount],
+updateCount:short, dynamicObject[updateCount],
+removeCount:short, objectId:int[removeCount],
+boardReset:boolean,
+priorityTileCount:short, deltaTile[priorityTileCount],
+fillTileCount:short, deltaTile[fillTileCount],
+teamScorePatches,
+effectCount:short, effectType:byte[effectCount]
+```
 
-Events are presentation hints. The object/tile/score state in the same sequence is authoritative.
+Dynamic object records contain only mutable fields:
+
+- Player `0`: `objectId:int, x:byte, y:byte, direction:byte, playerState:byte,
+  colouringForUserId:int, teamId:byte` (14 bytes including type)
+- Pickup `1`: `objectId:int, holderObjectId:int, powerType:byte, secondsRemaining:byte, x:byte, y:byte`
+- Pin `2`: `objectId:int, x:byte, y:byte`
+
+Object operations are deduplicated per tick. A spawn and removal in the same tick cancel. Board
+reset is atomic and sends every retained player as a full spawn so newly joined players and bots do
+not depend on an earlier queued delta.
+
+A delta tile is `x:byte, y:byte, packed:byte`. The packed byte holds `colour + 2` in bits 0..2 and
+tile state in bits 3..5; bits 6..7 are zero. Floor height and walkability remain from the full
+snapshot. Priority tiles are direct landings/power effects and animate before flood-fill tiles.
+
+Delta team scores are patches: only changed teams are sent and the client merges them atomically.
+Effect types are presentation hints only: `3=pickup`, `4=stun`, `5=activation`. Authoritative object,
+tile, and score state is carried separately in the same sequence.
 
 ## Lifecycle and reliability
 
-- Lobby mutations immediately broadcast 7602 or 7606 to observers.
-- Creation is idempotent while the creator owns a lobby. Tickets are charged once per active
-  player, atomically, after start validation and immediately before that round enters countdown.
-- Disconnects reserve the player slot for a configurable grace period. 7513 restores that player;
-  expiry removes it and broadcasts the new lobby or running state.
-- A match owns one 500 ms scheduled task. Terminal transitions and disposal cancel it exactly once.
-- Watchers receive the same snapshots/deltas but cannot send movement or power actions.
-- A stale sequence, late join, watch, reset, or rejoin is repaired with 7612; normal play uses 7613.
+- Requesting 7500 subscribes the user to lobby updates; only that lounge audience receives 7602/7606.
+- Creation and joining leave players in the hotel room while the lobby window is open. Start removes
+  participants from the lounge audience and enters the isolated arena.
+- Creation/start are idempotent where retrying could otherwise double-charge. Tickets are charged
+  atomically once per active human participant immediately before the round enters countdown.
+- One scheduled task per game publishes compact deltas every 500 ms. Start does not send an immediate
+  full snapshot; the next delta carries the atomic board reset.
+- Join/watch sends GameLocation, after which the client requests one full snapshot. Normal play uses
+  deltas; only a sequence gap or an unconfirmed local countdown transition requests recovery.
+- New joins are accepted only in the lobby. New watchers are accepted only during countdown/running.
+  A retained watcher can become a player after the game returns to its lobby.
+- Watchers receive the same status stream but cannot move or activate powers. SpectatorCount is an
+  optional side channel sent on watcher membership changes and full recovery; it deliberately does
+  not alter the positional version-2 snapshot layouts.
+- Team switching, adding/removing bots and kicking share one per-user/game 500 ms mutation bucket.
+- Kicked and idle-removed users receive PlayerRemoved directly so they can release the arena and
+  return to the lounge even though they are no longer status-stream recipients.
+- Disconnect removes membership immediately. A finished match remains available for standings until
+  participants leave; abandoned games are collected by the normal ownerless/disposal path.

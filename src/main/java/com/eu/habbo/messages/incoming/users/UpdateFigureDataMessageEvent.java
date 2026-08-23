@@ -46,6 +46,12 @@ public class UpdateFigureDataMessageEvent extends MessageHandler {
         if (this.client.getHabbo().getHabboInfo().getCurrentRoom() != null) {
             this.client.getHabbo().getHabboInfo().getCurrentRoom().sendComposer(new UserChangeMessageComposer(this.client.getHabbo()).compose());
         }
+        // The room sees the new figure immediately; friends only ever learned about it when the
+        // wearer next logged in or changed room, so tell them here too.
+        if (this.client.getHabbo().getMessenger() != null) {
+            this.client.getHabbo().getMessenger().connectionChanged(this.client.getHabbo(), true,
+                    this.client.getHabbo().getHabboInfo().getCurrentRoom() != null);
+        }
         if ((oldLook == null || !oldLook.equals(validatedLook) || oldGender != lookEvent.gender)
                 && Emulator.getGameEnvironment().getRewardTrackManager() != null) {
             Emulator.getGameEnvironment().getRewardTrackManager().progress(this.client.getHabbo(), "change_figure");

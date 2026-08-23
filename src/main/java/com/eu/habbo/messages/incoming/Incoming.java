@@ -129,6 +129,10 @@ public class Incoming {
     public static final int OpenTradingEvent = 1481;
     public static final int RequestTargetOfferEvent = 2487;
     public static final int SetRelationshipStatusMessageEvent = 3768;
+    /** Client's periodic friend list refresh, every two minutes. Empty body. */
+    public static final int FriendListUpdateMessageEvent = 1419;
+    /** Client latency telemetry: average ping, cleared average, sample count. Every 20 seconds. */
+    public static final int LatencyPingReportMessageEvent = 96;
     public static final int ChangePostureMessageEvent = 2235;
     public static final int CanCreateRoomMessageEvent = 2128;
     public static final int ModKickMessageEvent = 2582;
@@ -454,12 +458,9 @@ public class Incoming {
     public static final int RejectQuestEvent = 2397;
     public static final int OpenQuestTrackerEvent = 2750;
 
-    // Original Shockwave BattleBall (protocol version 1). These headers are intentionally
+    // Original Shockwave BattleBall (protocol version 2). These headers are intentionally
     // separate from the modern Battle Banzai feature and are documented in BATTLEBALL_PROTOCOL.md.
     public static final int BattleBallGetInstanceListEvent = 7500;
-    public static final int BattleBallObserveEvent = 7501;
-    public static final int BattleBallUnobserveEvent = 7502;
-    public static final int BattleBallInitiateCreateEvent = 7503;
     public static final int BattleBallSetGameParametersEvent = 7504;
     public static final int BattleBallDeleteEvent = 7505;
     public static final int BattleBallInitiateJoinEvent = 7506;
@@ -469,8 +470,10 @@ public class Incoming {
     public static final int BattleBallWatchEvent = 7510;
     public static final int BattleBallStartEvent = 7511;
     public static final int BattleBallGameEvent = 7512;
-    public static final int BattleBallRejoinEvent = 7513;
     public static final int BattleBallRequestFullStatusEvent = 7514;
+    public static final int BattleBallBuyTicketsEvent = 7515;
+    public static final int BattleBallAddBotEvent = 7516;
+    public static final int BattleBallRemoveBotEvent = 7517;
 
     public static final int UNKNOWN_SNOWSTORM_6000 = 6000;
     public static final int UNKNOWN_SNOWSTORM_6001 = 6001;
@@ -483,7 +486,8 @@ public class Incoming {
     public static final int UNKNOWN_SNOWSTORM_6008 = 6008;
     public static final int UNKNOWN_SNOWSTORM_6009 = 6009;
     public static final int UNKNOWN_SNOWSTORM_6010 = 6010;
-    public static final int UNKNOWN_SNOWSTORM_6011 = 6011;
+    /** SnowStorm announcing it has no game loaded. Sent on login, once the club info arrives. */
+    public static final int SnowStormGameUnloadedMessageEvent = 6011;
     public static final int SnowStormJoinQueueEvent = 6012;
     public static final int UNKNOWN_SNOWSTORM_6013 = 6013;
     public static final int UNKNOWN_SNOWSTORM_6014 = 6014;

@@ -232,7 +232,7 @@ public class HabboInfo implements Runnable {
         }
     }
 
-    public int getCurrencyAmount(int type) {
+    public synchronized int getCurrencyAmount(int type) {
         return this.currencies.get(type);
     }
 
@@ -240,12 +240,12 @@ public class HabboInfo implements Runnable {
         return this.currencies;
     }
 
-    public void addCurrencyAmount(int type, int amount) {
+    public synchronized void addCurrencyAmount(int type, int amount) {
         this.currencies.adjustOrPutValue(type, amount, amount);
         this.run();
     }
 
-    public void setCurrencyAmount(int type, int amount) {
+    public synchronized void setCurrencyAmount(int type, int amount) {
         this.currencies.put(type, amount);
         this.run();
     }

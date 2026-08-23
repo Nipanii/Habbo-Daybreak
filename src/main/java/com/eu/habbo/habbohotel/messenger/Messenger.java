@@ -18,7 +18,10 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class Messenger {
@@ -301,6 +304,8 @@ public class Messenger {
                             buddy.setOnline(online);
                             buddy.inRoom(inRoom);
                             buddy.setLook(owner.getHabboInfo().getLook());
+                            buddy.setMotto(owner.getHabboInfo().getMotto() == null
+                                    ? "" : owner.getHabboInfo().getMotto());
                             buddy.setGender(owner.getHabboInfo().getGender());
                             buddy.setUsername(owner.getHabboInfo().getUsername());
                             habbo.getClient().sendResponse(new FriendListUpdateMessageComposer(habbo, buddy, 0));
@@ -309,6 +314,57 @@ public class Messenger {
                 }
             }
         }
+    }
+
+    /**
+     * Brings every friend entry back in line with the live session, returning only those that moved.
+     *
+     * The client polls for this every two minutes, and it exists because pushes do not cover
+     * everything: connectionChanged() fires on login, logout and room changes, but a friend who
+     * changes their figure or motto while standing still notifies nobody, so their entry stays stale
+     * in everyone else's list until they next move rooms.
+     *
+     * Only changed buddies are returned, so a quiet list costs one pass over a map and no packet.
+     */
+    public List<MessengerBuddy> refreshFriends() {
+        List<MessengerBuddy> changed = new ArrayList<>();
+
+        for (MessengerBuddy buddy : this.getFriends().values()) {
+            if (buddy == null) continue;
+
+            Habbo habbo = Emulator.getGameServer().getGameClientManager().getHabbo(buddy.getId());
+            boolean online = habbo != null;
+            boolean inRoom = online && habbo.getHabboInfo().getCurrentRoom() != null;
+
+            boolean moved = (buddy.getOnline() == 1) != online || buddy.inRoom() != inRoom;
+
+            if (online) {
+                String look = habbo.getHabboInfo().getLook();
+                String motto = habbo.getHabboInfo().getMotto();
+                String username = habbo.getHabboInfo().getUsername();
+
+                moved = moved
+                        || !Objects.equals(buddy.getLook(), look)
+                        || !Objects.equals(buddy.getMotto(), motto)
+                        || !Objects.equals(buddy.getUsername(), username)
+                        || buddy.getGender() != habbo.getHabboInfo().getGender();
+
+                if (moved) {
+                    buddy.setLook(look);
+                    buddy.setMotto(motto == null ? "" : motto);
+                    buddy.setUsername(username);
+                    buddy.setGender(habbo.getHabboInfo().getGender());
+                }
+            }
+
+            if (moved) {
+                buddy.setOnline(online);
+                buddy.inRoom(inRoom);
+                changed.add(buddy);
+            }
+        }
+
+        return changed;
     }
 
     public void deleteAllFriendRequests(int userTo) {

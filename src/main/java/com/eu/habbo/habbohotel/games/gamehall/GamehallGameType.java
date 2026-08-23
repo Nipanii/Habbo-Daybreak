@@ -6,7 +6,12 @@ public enum GamehallGameType {
     TICTACTOE("TicTacToe", 1, 2, "gamehall.tictactoe.enabled"),
     CHESS("Chess", 2, 2, "gamehall.chess.enabled"),
     BATTLESHIPS("BattleShip", 1, 2, "gamehall.battleships.enabled"),
-    POKER("Poker", 1, 4, "gamehall.poker.enabled");
+    POKER("Poker", 1, 4, "gamehall.poker.enabled"),
+    /**
+     * BattleBall is not seated furniture like the others -- it is played in its own arena -- but it
+     * shares the leaderboard, so it needs a type here. The seat counts are its team limits.
+     */
+    BATTLEBALL("BattleBall", 2, 20, "battleball.enabled");
 
     private final String fuseToken;
     private final int minSeats;

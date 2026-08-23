@@ -22,6 +22,7 @@ import com.eu.habbo.messages.incoming.floorplaneditor.GetOccupiedTilesMessageEve
 import com.eu.habbo.messages.incoming.floorplaneditor.GetRoomEntryTileMessageEvent;
 import com.eu.habbo.messages.incoming.floorplaneditor.UpdateFloorPropertiesMessageEvent;
 import com.eu.habbo.messages.incoming.friends.*;
+import com.eu.habbo.messages.incoming.games.SnowStormGameUnloadedMessageEvent;
 import com.eu.habbo.messages.incoming.gamecenter.*;
 import com.eu.habbo.messages.incoming.games.gamehall.GameBoardMoveMessageEvent;
 import com.eu.habbo.messages.incoming.games.gamehall.RequestGamehallLeaderboardMessageEvent;
@@ -175,9 +176,6 @@ public class PacketManager {
 
     private void registerBattleBall() throws Exception {
         this.registerHandler(Incoming.BattleBallGetInstanceListEvent, BattleBallGetInstanceListEvent.class);
-        this.registerHandler(Incoming.BattleBallObserveEvent, BattleBallObserveEvent.class);
-        this.registerHandler(Incoming.BattleBallUnobserveEvent, BattleBallUnobserveEvent.class);
-        this.registerHandler(Incoming.BattleBallInitiateCreateEvent, BattleBallInitiateCreateEvent.class);
         this.registerHandler(Incoming.BattleBallSetGameParametersEvent, BattleBallSetGameParametersEvent.class);
         this.registerHandler(Incoming.BattleBallDeleteEvent, BattleBallDeleteEvent.class);
         this.registerHandler(Incoming.BattleBallInitiateJoinEvent, BattleBallInitiateJoinEvent.class);
@@ -187,8 +185,10 @@ public class PacketManager {
         this.registerHandler(Incoming.BattleBallWatchEvent, BattleBallWatchEvent.class);
         this.registerHandler(Incoming.BattleBallStartEvent, BattleBallStartEvent.class);
         this.registerHandler(Incoming.BattleBallGameEvent, BattleBallGameEvent.class);
-        this.registerHandler(Incoming.BattleBallRejoinEvent, BattleBallRejoinEvent.class);
         this.registerHandler(Incoming.BattleBallRequestFullStatusEvent, BattleBallRequestFullStatusEvent.class);
+        this.registerHandler(Incoming.BattleBallBuyTicketsEvent, BattleBallBuyTicketsEvent.class);
+        this.registerHandler(Incoming.BattleBallAddBotEvent, BattleBallAddBotEvent.class);
+        this.registerHandler(Incoming.BattleBallRemoveBotEvent, BattleBallRemoveBotEvent.class);
     }
 
     public void registerCallable(Integer header, ICallable callable) {
@@ -350,6 +350,7 @@ public class PacketManager {
     private void registerFriends() throws Exception {
         this.registerHandler(Incoming.GetMOTDMessageEvent, GetMOTDMessageEvent.class);
         this.registerHandler(Incoming.SetRelationshipStatusMessageEvent, SetRelationshipStatusMessageEvent.class);
+        this.registerHandler(Incoming.FriendListUpdateMessageEvent, FriendListUpdateMessageEvent.class);
         this.registerHandler(Incoming.RemoveFriendMessageEvent, RemoveFriendMessageEvent.class);
         this.registerHandler(Incoming.HabboSearchMessageEvent, HabboSearchMessageEvent.class);
         this.registerHandler(Incoming.RequestFriendMessageEvent, RequestFriendMessageEvent.class);
@@ -708,6 +709,9 @@ public class PacketManager {
     }
 
     void registerUnknown() throws Exception {
+        // Accepted and discarded: the client sends these regardless of what this server implements.
+        this.registerHandler(Incoming.LatencyPingReportMessageEvent, LatencyPingReportMessageEvent.class);
+        this.registerHandler(Incoming.SnowStormGameUnloadedMessageEvent, SnowStormGameUnloadedMessageEvent.class);
         this.registerHandler(Incoming.GetResolutionAchievementsMessageEvent, GetResolutionAchievementsMessageEvent.class);
         this.registerHandler(Incoming.RequestTalenTrackEvent, RequestTalentTrackEvent.class);
         this.registerHandler(Incoming.GetBadgePointLimitsEvent, GetBadgePointLimitsEvent.class);

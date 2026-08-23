@@ -6,7 +6,6 @@ import com.eu.habbo.messages.MalformedPacketException;
 import com.eu.habbo.messages.outgoing.Outgoing;
 import com.eu.habbo.messages.outgoing.games.battleball.BattleBallFailureComposer;
 import com.eu.habbo.messages.outgoing.games.battleball.BattleBallGameLocationComposer;
-import com.eu.habbo.messages.outgoing.games.battleball.BattleBallGameParametersComposer;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
@@ -23,6 +22,6 @@ public final class BattleBallSetGameParametersEvent extends BattleBallHandler {
         this.requireEnd(); if (this.habbo() == null) return;
         BattleBallManager.Result result = this.manager().create(this.habbo(), new BattleBallManager.Creation(name, mapId, roundSeconds, teamCount, teamCapacity, selectedTeam, privateGame, powers));
         if (!result.success()) this.client.sendResponse(new BattleBallFailureComposer(Outgoing.BattleBallCreateFailedComposer, result.failure()));
-        else { this.client.sendResponse(new BattleBallGameParametersComposer(result.game())); this.client.sendResponse(new BattleBallGameLocationComposer(result.game(), false)); }
+        else this.client.sendResponse(new BattleBallGameLocationComposer(result.game(), false));
     }
 }
