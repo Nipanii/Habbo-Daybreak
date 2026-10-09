@@ -90,6 +90,7 @@ public class HabboStats implements Runnable {
     public long roomEnterTimestamp;
     public AtomicInteger chatCounter = new AtomicInteger(0);
     public long lastChat;
+    public long lastMessengerChat;
     public long lastUsersSearched;
     public boolean nux;
     public boolean nuxReward;

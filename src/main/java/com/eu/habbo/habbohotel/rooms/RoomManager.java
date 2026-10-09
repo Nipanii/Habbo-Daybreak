@@ -1182,6 +1182,14 @@ public class RoomManager {
             com.eu.habbo.habbohotel.wired.core.WiredManager.triggerUserLeavesRoom(room, habbo.getRoomUnit());
 
             this.logExit(habbo);
+            if (Emulator.getGameEnvironment().getBattleBallManager() != null) {
+                Emulator.getGameEnvironment().getBattleBallManager()
+                        .roomLeave(habbo.getHabboInfo().getId());
+            }
+            if (Emulator.getGameEnvironment().getSnowStormManager() != null) {
+                Emulator.getGameEnvironment().getSnowStormManager()
+                        .roomLeave(habbo.getHabboInfo().getId());
+            }
             room.removeHabbo(habbo, true);
             Emulator.getGameEnvironment().getChestManager()
                     .autoLockChestsForOwner(room, habbo);

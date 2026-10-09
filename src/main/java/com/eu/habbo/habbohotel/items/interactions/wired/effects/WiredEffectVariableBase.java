@@ -16,6 +16,7 @@ import com.eu.habbo.habbohotel.wired.variables.WiredVariableHolder;
 import com.eu.habbo.habbohotel.wired.variables.WiredVariableManager;
 import com.eu.habbo.habbohotel.wired.variables.WiredVariableMutation;
 import com.eu.habbo.habbohotel.wired.variables.WiredGeneratedVariableRuntime;
+import com.eu.habbo.habbohotel.wired.variables.WiredVariableAliasOperations;
 import com.eu.habbo.habbohotel.items.interactions.wired.variables.WiredVariableContext;
 import com.eu.habbo.messages.ServerMessage;
 import com.eu.habbo.messages.incoming.wired.WiredSaveException;
@@ -132,7 +133,12 @@ abstract class WiredEffectVariableBase extends InteractionWiredEffect {
         }
         if (target == TARGET_CONTEXT) {
             WiredVariableContext context = contextDefinition(room, variableId);
-            if (context == null) throw new WiredSaveException("Variable target does not match its definition");
+            if (context == null) {
+                var resolved = WiredVariableAliasOperations.resolve(room, variableId);
+                if (resolved != null && resolved.definition().type()
+                        == com.eu.habbo.habbohotel.wired.WiredVariableType.CONTEXT) return resolved.definition();
+                throw new WiredSaveException("Variable target does not match its definition");
+            }
             return WiredVariableDefinition.create(room.getId(), context.getId(), context.getType(),
                     context.variableName(), 0, context.hasValue(), false);
         }
@@ -147,10 +153,27 @@ abstract class WiredEffectVariableBase extends InteractionWiredEffect {
         return definition;
     }
 
+    final WiredVariableDefinition validateOperation(Room room, String id, int target,
+            boolean allowGlobal, boolean creationDeletion) throws WiredSaveException {
+        WiredVariableDefinition definition = validateDefinition(room, id, target, allowGlobal);
+        boolean allowed = canOperate(room, id, target, creationDeletion);
+        if (!allowed) throw new WiredSaveException("Variable does not support this operation");
+        return definition;
+    }
+
+    final boolean canOperate(Room room, String id, int target, boolean creationDeletion) {
+        var context = target == TARGET_CONTEXT ? contextDefinition(room, id) : null;
+        return context != null ? creationDeletion || context.hasValue()
+                : creationDeletion ? WiredVariableAliasOperations.canCreateDelete(room, id)
+                : WiredVariableAliasOperations.canWriteValue(room, id);
+    }
+
     final WiredVariableDefinition validateReadableDefinition(Room room, String variableId, int target,
                                                              boolean allowGlobal) throws WiredSaveException {
         try {
-            return validateDefinition(room, variableId, target, allowGlobal);
+            var definition = validateDefinition(room, variableId, target, allowGlobal);
+            if (!definition.hasValue()) throw new WiredSaveException("Variable has no numeric value");
+            return definition;
         } catch (WiredSaveException exception) {
             WiredVariableDefinition parent = WiredGeneratedVariableRuntime.parentDefinition(room, variableId);
             if (parent != null && matchesTarget(parent, target)) return parent;
@@ -213,9 +236,11 @@ abstract class WiredEffectVariableBase extends InteractionWiredEffect {
                     || exposedVariableId.isBlank()) {
                 return;
             }
-            WiredVariableMutation sourced = forcedOrigin == null
-                    ? mutation
-                    : mutation.withProvenance(mutation.boxId(), forcedOrigin);
+            var source = WiredVariableAliasOperations.resolve(context.room(), exposedVariableId);
+            boolean anotherRoom = source != null && source.manager().roomId() != context.room().getId();
+            WiredVariableMutation sourced = forcedOrigin == null ? mutation
+                    : mutation.withProvenance(mutation.boxId(), anotherRoom ? forcedOrigin
+                    : WiredVariableMutation.CHANGE_ORIGIN_IN_ROOM);
             WiredVariableMutation exposed = exposedVariableId.equals(sourced.variableId())
                     ? sourced
                     : new WiredVariableMutation(

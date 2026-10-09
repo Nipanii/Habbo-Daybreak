@@ -45,6 +45,12 @@ public final class WiredVariableAliasResolver {
         }
 
         InteractionWiredVariable item = item(room, variableId);
+        if (item instanceof com.eu.habbo.habbohotel.items.interactions.wired.variables.WiredVariableContext context) {
+            if (!WiredVariableName.isValid(context.variableName())) return null;
+            return new Resolved(room, variableId, WiredVariableDefinition.create(room.getId(), context.getId(),
+                    com.eu.habbo.habbohotel.wired.WiredVariableType.CONTEXT, context.variableName(),
+                    0, context.hasValue(), false), false);
+        }
         if (item instanceof WiredVariableEcho echo) {
             return resolve(room, echo.sourceId(), visited, depth + 1);
         }
@@ -66,6 +72,27 @@ public final class WiredVariableAliasResolver {
             return null;
         }
         WiredVariableDefinition definition = manager.runtimeDefinition(variableId);
+        if (definition == null) {
+            var internal = WiredInternalVariableRuntime.definitions().stream()
+                    .filter(value -> value.variableId().equals(variableId)).findFirst().orElse(null);
+            if (internal != null) {
+                var type = switch (internal.target()) {
+                    case 0 -> com.eu.habbo.habbohotel.wired.WiredVariableType.FURNI;
+                    case 1 -> com.eu.habbo.habbohotel.wired.WiredVariableType.USER;
+                    case -10 -> com.eu.habbo.habbohotel.wired.WiredVariableType.ROOM;
+                    default -> com.eu.habbo.habbohotel.wired.WiredVariableType.CONTEXT;
+                };
+                definition = WiredVariableDefinition.runtimeView(room.getId(), variableId,
+                        type, internal.name(), type == com.eu.habbo.habbohotel.wired.WiredVariableType.FURNI
+                                || type == com.eu.habbo.habbohotel.wired.WiredVariableType.ROOM ? 1 : 0, true);
+                return new Resolved(room, variableId, definition, !internal.writable());
+            }
+            var parent = WiredGeneratedVariableRuntime.parentDefinition(room, variableId);
+            var effectiveParent = parent == null ? null : resolve(room, parent.variableId(), visited, depth + 1);
+            if (effectiveParent != null && effectiveParent.definition().hasValue()) return new Resolved(room, variableId,
+                    WiredVariableDefinition.runtimeView(room.getId(), variableId, parent.type(),
+                            parent.name(), parent.availabilityCode(), true), true);
+        }
         return definition == null
                 ? null
                 : new Resolved(room, variableId, definition, false);

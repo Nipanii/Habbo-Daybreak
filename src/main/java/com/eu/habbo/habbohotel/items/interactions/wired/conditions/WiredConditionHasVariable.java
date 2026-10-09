@@ -41,7 +41,9 @@ public class WiredConditionHasVariable extends WiredConditionVariableBase {
         }
         int requestedScope = settings.getIntParams()[0];
         String requestedId = settings.getVariableIds()[0];
-        if (!validateDefinition(room, requestedId, requestedScope)) {
+        var capabilities = metadata(room, requestedId);
+        if (!validateDefinition(room, requestedId, requestedScope)
+                || capabilities == null || capabilities.alwaysAvailable()) {
             return false;
         }
         this.variableId = requestedId;

@@ -3,6 +3,7 @@ package com.eu.habbo.messages.incoming.habbicons;
 import com.eu.habbo.Emulator;
 import com.eu.habbo.habbohotel.habbicons.HabbiconManager;
 import com.eu.habbo.habbohotel.messenger.Message;
+import com.eu.habbo.habbohotel.messenger.Messenger;
 import com.eu.habbo.habbohotel.messenger.MessengerBuddy;
 import com.eu.habbo.habbohotel.users.Habbo;
 import com.eu.habbo.messages.incoming.MessageHandler;
@@ -20,10 +21,11 @@ public class SendHabbiconInstantMessageEvent extends MessageHandler {
         }
 
         long millis = System.currentTimeMillis();
-        if (millis - this.client.getHabbo().getHabboStats().lastChat < 750) {
+        if (Messenger.CHAT_DELAY_MILLIS > 0
+                && millis - this.client.getHabbo().getHabboStats().lastMessengerChat < Messenger.CHAT_DELAY_MILLIS) {
             return;
         }
-        this.client.getHabbo().getHabboStats().lastChat = millis;
+        this.client.getHabbo().getHabboStats().lastMessengerChat = millis;
 
         MessengerBuddy buddy = this.client.getHabbo().getMessenger().getFriend(chatId);
         if (buddy == null) {

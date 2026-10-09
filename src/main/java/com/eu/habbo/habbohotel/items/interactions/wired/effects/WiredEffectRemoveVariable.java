@@ -58,7 +58,7 @@ public final class WiredEffectRemoveVariable extends WiredEffectVariableBase {
         }
         String requestedId = settings.getVariableIds()[0];
         int requestedTarget = settings.getIntParams()[0];
-        validateDefinition(room, requestedId, requestedTarget, false);
+        validateOperation(room, requestedId, requestedTarget, false, true);
         saveSelections(room, settings.getFurniIds(), settings.getFurniIds2(), false);
         this.variableId = requestedId;
         this.target = requestedTarget;
@@ -68,7 +68,8 @@ public final class WiredEffectRemoveVariable extends WiredEffectVariableBase {
 
     @Override
     public void execute(WiredContext context) {
-        if (context == null || !WiredFeatureCapabilityGuard.isRuntimeReady(this)) {
+        if (context == null || !WiredFeatureCapabilityGuard.isRuntimeReady(this)
+                || !canOperate(context.room(), this.variableId, this.target, true)) {
             return;
         }
         if (this.target == TARGET_CONTEXT) {

@@ -32,6 +32,9 @@ public class Messenger {
     public static boolean SAVE_PRIVATE_CHATS = false;
     public static int MAXIMUM_FRIENDS = 200;
     public static int MAXIMUM_FRIENDS_HC = 500;
+    //Minimum gap between two messenger messages from the same user, in milliseconds. Messages sent
+    //inside the gap are dropped silently, so keep this well below human typing speed. 0 disables it.
+    public static int CHAT_DELAY_MILLIS = 100;
 
     private final ConcurrentHashMap<Integer, MessengerBuddy> friends;
     private final THashSet<FriendRequest> friendRequests;

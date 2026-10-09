@@ -172,10 +172,22 @@ abstract class WiredSelectorConfigBase extends InteractionWiredSelector {
     }
 
     @Override
-    protected int[] getSelectedItem2VisibleIds() {
-        return getSelectedItems2().stream()
-                .mapToInt(HabboItem::getRoomVisibleId)
+    protected boolean sanitizeSelectedItems(Room room) {
+        if (room == null) {
+            return false;
+        }
+        boolean changed = pruneInvalidSelectedItems(room, this.items);
+        if (this.furniIds2.length == 0) {
+            return changed;
+        }
+        int[] currentIds = java.util.Arrays.stream(this.furniIds2)
+                .filter(id -> isCurrentSelectedItem(room, room.getHabboItemByDatabaseId(id)))
                 .toArray();
+        if (!java.util.Arrays.equals(this.furniIds2, currentIds)) {
+            this.furniIds2 = currentIds;
+            changed = true;
+        }
+        return changed;
     }
 
     private int[] toDatabaseIds(Room room, int[] visibleIds) {

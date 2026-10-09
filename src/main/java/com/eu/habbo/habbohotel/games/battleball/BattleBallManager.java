@@ -2,6 +2,7 @@ package com.eu.habbo.habbohotel.games.battleball;
 
 import com.eu.habbo.Emulator;
 import com.eu.habbo.habbohotel.gameclients.GameClient;
+import com.eu.habbo.habbohotel.tickets.HotelTicketService;
 import com.eu.habbo.habbohotel.users.Habbo;
 import com.eu.habbo.messages.outgoing.MessageComposer;
 import com.eu.habbo.messages.outgoing.Outgoing;
@@ -16,10 +17,6 @@ import com.eu.habbo.messages.outgoing.games.battleball.BattleBallLoungeInfoCompo
 import com.eu.habbo.messages.outgoing.games.battleball.BattleBallPlayerRemovedComposer;
 import com.eu.habbo.messages.outgoing.games.battleball.BattleBallSignalComposer;
 import com.eu.habbo.messages.outgoing.games.battleball.BattleBallSpectatorCountComposer;
-import com.eu.habbo.messages.outgoing.games.battleball.BattleBallTicketBalanceComposer;
-import com.eu.habbo.messages.outgoing.games.battleball.BattleBallTicketPurchaseResultComposer;
-import com.eu.habbo.messages.outgoing.users.HabboActivityPointNotificationMessageComposer;
-import com.eu.habbo.messages.outgoing.users.CreditBalanceMessageComposer;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -37,7 +34,6 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -54,11 +50,6 @@ public final class BattleBallManager {
     public static final int FAILURE_NOT_ENOUGH_TEAMS = 9;
     public static final int FAILURE_NOT_A_PLAYER = 10;
     public static final int FAILURE_NOT_ALLOWED = 11;
-    public static final int PURCHASE_OK = 0;
-    public static final int PURCHASE_INSUFFICIENT_CREDITS = 1;
-    public static final int PURCHASE_RECIPIENT_NOT_FOUND = 2;
-    public static final int PURCHASE_INVALID_BUNDLE = 3;
-    public static final int PURCHASE_DATABASE_ERROR = 4;
     public static final int REQUEST_THROTTLED = -2;
     public static final int REMOVAL_KICKED = 0;
     public static final int REMOVAL_IDLE = 1;
@@ -125,7 +116,7 @@ public final class BattleBallManager {
     }
 
     public boolean enabled() { return this.enabled; }
-    public int currencyType() { return Emulator.getConfig().getInt("battleball.ticket.currency.type", 106); }
+    public int currencyType() { return this.ticketService().currencyType(); }
     public int ticketCost() { return Math.max(0, Emulator.getConfig().getInt("battleball.ticket.cost", 2)); }
     public int skillLevel(int userId) { return this.enabled ? this.repository.skillLevel(userId) : 1; }
 
@@ -372,14 +363,14 @@ public final class BattleBallManager {
                     if (habbo == null) return FAILURE_BAD_STATE;
                     participants.add(habbo);
                 }
-                BattleBallRepository.ChargeResult charge = withWalletLocks(participants, 0, () -> {
+                BattleBallRepository.ChargeResult charge = this.ticketService().withWalletLocks(participants, () -> {
                     BattleBallRepository.ChargeResult committed = this.repository.chargeRound(
                             game, participants, this.currencyType(), this.ticketCost(), rankedRound);
                     if (committed.success()) {
                         for (Habbo habbo : participants) {
                             Integer balance = committed.balances().get(habbo.getHabboInfo().getId());
                             if (balance != null) {
-                                habbo.getHabboInfo().applyCommittedCurrencyBalance(this.currencyType(), balance);
+                                this.ticketService().applyCommittedBalance(habbo, balance);
                             }
                         }
                     }
@@ -401,10 +392,7 @@ public final class BattleBallManager {
                     Integer balance = charge.balances().get(habbo.getHabboInfo().getId());
                     if (balance != null) {
                         int charged = charge.costs().getOrDefault(habbo.getHabboInfo().getId(), this.ticketCost());
-                        this.sendSafely(habbo, new HabboActivityPointNotificationMessageComposer(
-                                balance, -charged, this.currencyType()), "round ticket charge");
-                        this.sendSafely(habbo, new BattleBallTicketBalanceComposer(balance),
-                                "round ticket balance");
+                        this.ticketService().sendCommittedBalance(habbo, balance, -charged);
                     }
                 }
                 this.sendToGame(game, ignored -> new BattleBallGameStartComposer(game));
@@ -462,58 +450,6 @@ public final class BattleBallManager {
         return -1;
     }
 
-    /** Original ticket shop: 2 tickets for 1 credit, or 20 tickets for 6 credits, optionally gifted. */
-    public void buyTickets(Habbo buyer, int bundleId, String recipientName) {
-        if (!this.enabled || buyer == null || buyer.getHabboInfo() == null || buyer.getClient() == null) return;
-        int creditCost;
-        int ticketsAdded;
-        if (bundleId == 1) { creditCost = 1; ticketsAdded = 2; }
-        else if (bundleId == 2) { creditCost = 6; ticketsAdded = 20; }
-        else {
-            this.sendSafely(buyer, new BattleBallTicketPurchaseResultComposer(
-                    PURCHASE_INVALID_BUNDLE, "", 0), "invalid ticket purchase");
-            return;
-        }
-        Habbo onlineRecipient = recipientName == null || recipientName.isBlank()
-                ? buyer : Emulator.getGameEnvironment().getHabboManager().getHabbo(recipientName.trim());
-        List<Habbo> walletOwners = onlineRecipient == null || onlineRecipient == buyer
-                ? List.of(buyer) : List.of(buyer, onlineRecipient);
-        BattleBallRepository.PurchaseResult result = withWalletLocks(walletOwners, 0, () -> {
-            BattleBallRepository.PurchaseResult committed = this.repository.purchaseTickets(
-                    buyer.getHabboInfo().getId(), recipientName, this.currencyType(), creditCost, ticketsAdded);
-            if (committed.success()) {
-                buyer.getHabboInfo().applyCommittedCreditBalance(committed.creditsRemaining());
-                if (onlineRecipient != null
-                        && onlineRecipient.getHabboInfo().getId() == committed.recipientUserId()) {
-                    onlineRecipient.getHabboInfo().applyCommittedCurrencyBalance(
-                            this.currencyType(), committed.ticketBalance());
-                }
-            }
-            return committed;
-        });
-        if (!result.success()) {
-            this.sendSafely(buyer, new BattleBallTicketPurchaseResultComposer(
-                    result.status(), "", 0), "ticket purchase failure");
-            return;
-        }
-
-        this.sendSafely(buyer, new CreditBalanceMessageComposer(buyer), "credit balance");
-        Habbo recipient = Emulator.getGameEnvironment().getHabboManager().getHabbo(result.recipientUserId());
-        if (recipient != null) {
-            if (recipient != onlineRecipient) {
-                synchronized (recipient.getHabboInfo()) {
-                    recipient.getHabboInfo().applyCommittedCurrencyBalance(this.currencyType(), result.ticketBalance());
-                }
-            }
-            this.sendSafely(recipient, new BattleBallTicketBalanceComposer(result.ticketBalance()),
-                    "purchased ticket balance");
-            this.sendSafely(recipient, new HabboActivityPointNotificationMessageComposer(
-                    result.ticketBalance(), result.ticketsAdded(), this.currencyType()), "ticket activity points");
-        }
-        this.sendSafely(buyer, new BattleBallTicketPurchaseResultComposer(PURCHASE_OK,
-                result.recipientName(), result.ticketsAdded()), "ticket purchase result");
-    }
-
     public void requestFull(Habbo habbo, int instanceId) {
         if (!this.enabled) return;
         BattleBallGame game = this.games.get(instanceId);
@@ -544,6 +480,11 @@ public final class BattleBallManager {
         this.userGames.remove(userId, instanceId);
         if (removedWatcher) this.publishSpectatorCount(game);
         if (removedPlayer) this.publishLobbyMutation(game);
+    }
+
+    /** Room departures are session departures for the windowed, non-resumable BattleBall game. */
+    public void roomLeave(int userId) {
+        this.disconnected(userId);
     }
 
     public synchronized void dispose() {
@@ -781,8 +722,11 @@ public final class BattleBallManager {
     }
 
     private int ticketBalance(Habbo habbo) {
-        return habbo == null || habbo.getHabboInfo() == null ? 0
-                : Math.max(0, habbo.getHabboInfo().getCurrencyAmount(this.currencyType()));
+        return this.ticketService().balance(habbo);
+    }
+
+    private HotelTicketService ticketService() {
+        return Emulator.getGameEnvironment().getHotelTicketService();
     }
 
     private static boolean isInLoungeRoom(Habbo habbo) {
@@ -844,17 +788,6 @@ public final class BattleBallManager {
         for (int index = 15; index < ordered.size(); index++) {
             BattleBallFinishedGame stale = ordered.get(index);
             this.finishedGames.remove(stale.resultId(), stale);
-        }
-    }
-
-    private static <T> T withWalletLocks(List<Habbo> habbos, int index, Supplier<T> action) {
-        if (index == 0) {
-            habbos = habbos.stream().filter(habbo -> habbo != null && habbo.getHabboInfo() != null)
-                    .distinct().sorted(Comparator.comparingInt(habbo -> habbo.getHabboInfo().getId())).toList();
-        }
-        if (index >= habbos.size()) return action.get();
-        synchronized (habbos.get(index).getHabboInfo()) {
-            return withWalletLocks(habbos, index + 1, action);
         }
     }
 

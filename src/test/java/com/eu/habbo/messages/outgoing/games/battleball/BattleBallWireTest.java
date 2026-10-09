@@ -118,7 +118,7 @@ class BattleBallWireTest {
         assertTrue(game.start(1, now - 63_000, true, true));
         game.tick(now - 60_000);
         game.tick(now);
-        game.tick(now + 1);
+        game.tick(System.currentTimeMillis());
 
         ByteBuf packet = new BattleBallGameEndComposer(game).compose().get();
         packet.skipBytes(6);

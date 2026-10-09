@@ -18,7 +18,7 @@ import java.sql.SQLException;
 
 /** July code 7 ({@code wf_var_echo}): a configured local alias edge. */
 public final class WiredVariableEcho extends InteractionWiredVariable {
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
 
     private String name = "";
     private String sourceId = "";
@@ -60,6 +60,7 @@ public final class WiredVariableEcho extends InteractionWiredVariable {
                 ? null : environment.getRoomManager().getRoom(getRoomId());
         if (room == null
                 || WiredVariableAliasResolver.resolve(room, variableId()) == null
+                || !isPermittedSource(room, requestedSourceId)
                 || !persist()) {
             this.name = previousName;
             this.sourceId = previousSourceId;
@@ -74,7 +75,7 @@ public final class WiredVariableEcho extends InteractionWiredVariable {
 
         WiredCrossRoomAliasRepository.Entry stored =
                 WiredCrossRoomAliasRepository.instance().loadByItem(getId());
-        if (stored != null && stored.type() == WiredVariableType.ECHO) {
+        if (stored != null && stored.type() == WiredVariableType.ECHO && stored.version() >= VERSION) {
             this.name = stored.name();
             this.sourceId = stored.sourceVariableId();
             return;
@@ -89,13 +90,20 @@ public final class WiredVariableEcho extends InteractionWiredVariable {
         }
         String normalizedName = data == null ? null : WiredVariableName.normalize(data.name);
         if (data != null
-                && data.version == VERSION
+                && (data.version == VERSION || data.version == 1)
                 && data.type == WiredVariableType.ECHO.code
                 && WiredVariableName.isValid(normalizedName)
                 && isValidVariableId(data.sourceId)
                 && !data.sourceId.equals(variableId())) {
             this.name = normalizedName;
             this.sourceId = data.sourceId;
+            // Legacy registries flattened the edge and lost Reference policy.
+            // Retain the original item payload whenever it is available.
+            return;
+        }
+        if (stored != null && stored.type() == WiredVariableType.ECHO) {
+            this.name = stored.name();
+            this.sourceId = stored.sourceVariableId();
         }
     }
 
@@ -181,9 +189,8 @@ public final class WiredVariableEcho extends InteractionWiredVariable {
         WiredVariableAliasResolver.Resolved source =
                 WiredVariableAliasResolver.resolve(room, this.sourceId);
         if (source == null
-                || source.definition().holderScope() == null
-                || !WiredCrossRoomAliasRepository.instance()
-                .syncSourceDefinition(source.definition())) {
+                || (!isVirtualSource(source.variableId()) && !WiredCrossRoomAliasRepository.instance()
+                .syncSourceDefinition(source.definition()))) {
             return false;
         }
         return WiredCrossRoomAliasRepository.instance().upsert(
@@ -192,16 +199,31 @@ public final class WiredVariableEcho extends InteractionWiredVariable {
                         getRoomId(),
                         variableId(),
                         getType(),
-                        source.definition().holderScope().code,
+                        source.definition().holderScope() == null ? 2 : source.definition().holderScope().code,
                         this.name,
                         source.definition().availabilityCode(),
                         source.definition().hasValue(),
                         VERSION,
                         0,
-                        source.room().getId(),
-                        source.variableId(),
-                        false,
+                        getRoomId(),
+                        this.sourceId,
+                        source.readOnly(),
                         System.currentTimeMillis()));
+    }
+
+    private static boolean isVirtualSource(String id) {
+        return id != null && (id.startsWith("internal:") || id.contains(".value."));
+    }
+
+    private static boolean isPermittedSource(Room room, String id) {
+        // July Echo excludes user-created category 0. Reference/Echo boxes
+        // (category 2), internals (1), and smart views (3) are valid sources.
+        if (isVirtualSource(id)) return true;
+        if (id == null || !id.startsWith("room:")) return false;
+        try {
+            var item = room.getRoomSpecialTypes().getVariable(Integer.parseInt(id.substring(5)));
+            return item instanceof WiredVariableEcho || item instanceof WiredVariableReference;
+        } catch (NumberFormatException exception) { return false; }
     }
 
     private static boolean hasValidShape(WiredSettingsV2 settings) {

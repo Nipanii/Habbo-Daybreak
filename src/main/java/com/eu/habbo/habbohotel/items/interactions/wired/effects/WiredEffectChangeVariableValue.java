@@ -90,7 +90,7 @@ public final class WiredEffectChangeVariableValue extends WiredEffectVariableBas
                 throw new WiredSaveException("The selected internal variable is read-only");
             }
         } else {
-            validateDefinition(room, requestedId, parameters[0], true);
+            validateOperation(room, requestedId, parameters[0], true, false);
         }
         if (requiresOperand && parameters[2] == OPERAND_VARIABLE) {
             if (!WiredInternalVariableRuntime.matches(requestedOperandId, parameters[5])) {
@@ -114,7 +114,8 @@ public final class WiredEffectChangeVariableValue extends WiredEffectVariableBas
 
     @Override
     public void execute(WiredContext context) {
-        if (context == null || !WiredFeatureCapabilityGuard.isRuntimeReady(this)) {
+        if (context == null || !WiredFeatureCapabilityGuard.isRuntimeReady(this)
+                || !canOperate(context.room(), this.variableId, this.target, false)) {
             return;
         }
         WiredVariableManager manager = context.room().getRoomSpecialTypes().getWiredVariableManager();
@@ -128,6 +129,11 @@ public final class WiredEffectChangeVariableValue extends WiredEffectVariableBas
         int operand = resolvedOperand.getAsInt();
         WiredInternalVariableRuntime.Definition internal =
                 WiredInternalVariableRuntime.definition(this.variableId, this.target);
+        if (internal == null) {
+            var source = WiredVariableAliasOperations.resolve(context.room(), this.variableId);
+            if (source != null && !source.readOnly()) internal =
+                    WiredInternalVariableRuntime.definition(source.variableId(), this.target);
+        }
         if (internal != null) {
             executeInternal(context, internal, operand);
             return;
@@ -180,7 +186,7 @@ public final class WiredEffectChangeVariableValue extends WiredEffectVariableBas
             return OptionalInt.of(this.literalValue);
         }
         if (this.operandTarget == TARGET_CONTEXT) {
-            Integer value = context.contextVariables().get(this.operandVariableId);
+            Integer value = WiredVariableAliasOperations.readContext(context, this.operandVariableId);
             return value == null ? OptionalInt.empty() : OptionalInt.of(value);
         }
         WiredInternalVariableRuntime.Definition internal =
@@ -192,12 +198,7 @@ public final class WiredEffectChangeVariableValue extends WiredEffectVariableBas
         // July supplies one independent owner source for the operand. Resolve
         // multiple candidates deterministically by their stable holder order.
         for (WiredVariableHolder holder : resolveHolders(context, this.operandTarget, 1)) {
-            Integer aliased = WiredVariableAliasOperations.read(context.room(), this.operandVariableId, holder);
-            if (aliased != null) {
-                return OptionalInt.of(aliased);
-            }
-            WiredVariableValue value = manager.get(this.operandVariableId, holder);
-            if (value == null) value = WiredGeneratedVariableRuntime.read(
+            WiredVariableValue value = WiredVariableAliasOperations.readValue(
                     context.room(), this.operandVariableId, holder);
             if (value != null) {
                 return OptionalInt.of(value.value());
@@ -221,7 +222,8 @@ public final class WiredEffectChangeVariableValue extends WiredEffectVariableBas
                             if (value != current && WiredInternalVariableRuntime.write(
                                     context, definition.variableId(), holder, value)) {
                                 dispatchInternalMutation(
-                                        context, definition, holder, current, value);
+                                        context, definition, holder, current,
+                                        WiredInternalVariableRuntime.read(room, definition.variableId(), holder));
                             }
                         });
             }
@@ -246,7 +248,8 @@ public final class WiredEffectChangeVariableValue extends WiredEffectVariableBas
                                 if (value != current && WiredInternalVariableRuntime.write(
                                         context, definition.variableId(), holder, value)) {
                                     dispatchInternalMutation(
-                                            context, definition, holder, current, value);
+                                            context, definition, holder, current,
+                                            WiredInternalVariableRuntime.read(room, definition.variableId(), holder));
                                 }
                             });
                 }
@@ -263,14 +266,11 @@ public final class WiredEffectChangeVariableValue extends WiredEffectVariableBas
         for (RoomUnit unit : units) {
             Integer current = WiredInternalVariableRuntime.unitValues(room, unit)
                     .get(definition.name());
-            if (current == null && definition.writable()) {
-                current = 0;
-            }
-            if (current != null) {
-                int before = current;
-                WiredVariableActionMath.apply(this.operation, current, operand)
+            if (current != null || definition.writable()) {
+                Integer before = current;
+                WiredVariableActionMath.apply(this.operation, current == null ? 0 : current, operand)
                         .ifPresent(value -> {
-                            if (value == before || !WiredInternalVariableRuntime.writeUnit(
+                            if (java.util.Objects.equals(value, before) || !WiredInternalVariableRuntime.writeUnit(
                                     context, unit, definition.name(), value)) {
                                 return;
                             }
@@ -278,7 +278,8 @@ public final class WiredEffectChangeVariableValue extends WiredEffectVariableBas
                             int stableId = habbo != null && habbo.getHabboInfo() != null
                                     ? habbo.getHabboInfo().getId() : unit.getId();
                             dispatchInternalMutation(context, definition,
-                                    WiredVariableHolder.user(stableId), before, value);
+                                    WiredVariableHolder.user(stableId), before,
+                                    WiredInternalVariableRuntime.unitValues(room, unit).get(definition.name()));
                         });
             }
         }
@@ -288,14 +289,14 @@ public final class WiredEffectChangeVariableValue extends WiredEffectVariableBas
             WiredContext context,
             WiredInternalVariableRuntime.Definition definition,
             WiredVariableHolder holder,
-            int before,
-            int after) {
-        mutationDispatcher(context).accept(new WiredVariableMutation(
-                definition.variableId(), holder, before, after,
-                WiredVariableMutation.Kind.VALUE_CHANGED,
-                Math.max(1L, System.currentTimeMillis()),
-                this.getId(),
-                WiredVariableMutation.CHANGE_ORIGIN_IN_ROOM));
+            Integer before,
+            Integer after) {
+        var mutation = com.eu.habbo.habbohotel.wired.variables.WiredInternalVariableObserver.transition(
+                definition.variableId(), holder, before, after, this.getId(),
+                WiredVariableMutation.CHANGE_ORIGIN_IN_ROOM);
+        if (mutation == null) return;
+        com.eu.habbo.habbohotel.wired.variables.WiredInternalVariableObserver.record(context.room(), mutation);
+        mutationDispatcher(context, this.variableId).accept(mutation);
     }
 
     private OptionalInt resolveInternalOperand(

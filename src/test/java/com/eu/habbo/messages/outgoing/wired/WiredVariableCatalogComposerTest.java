@@ -60,7 +60,7 @@ class WiredVariableCatalogComposerTest {
             assertEquals(1, packet.readInt());
             assertEquals(-10, packet.readInt());
             assertTrue(packet.readBoolean());
-            assertTrue(packet.readBoolean());
+            assertFalse(packet.readBoolean());
             assertTrue(packet.readBoolean());
             assertTrue(packet.readBoolean());
             assertTrue(packet.readBoolean());

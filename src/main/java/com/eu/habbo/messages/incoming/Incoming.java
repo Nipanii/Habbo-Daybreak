@@ -317,7 +317,7 @@ public class Incoming {
     public static final int TryBusMessageEvent = 5205;
     public static final int ChangeWorldMessageEvent = 5206;
     public static final int GameBoardMoveMessageEvent = 5223;
-    public static final int RequestGamehallLeaderboardMessageEvent = 5225;
+    public static final int RequestLeaderboardMessageEvent = 5225;
     public static final int ClaimRewardTrackRewardMessageEvent = 1376;
     public static final int PurchaseRewardTrackPremiumMessageEvent = 1789;
     public static final int RequestHabbiconShopDataMessageEvent = 7300;
@@ -471,9 +471,26 @@ public class Incoming {
     public static final int BattleBallStartEvent = 7511;
     public static final int BattleBallGameEvent = 7512;
     public static final int BattleBallRequestFullStatusEvent = 7514;
-    public static final int BattleBallBuyTicketsEvent = 7515;
+    /** Shared hotel-ticket purchase used by classic ticketed public-room games. */
+    public static final int BuyTicketsEvent = 7515;
     public static final int BattleBallAddBotEvent = 7516;
     public static final int BattleBallRemoveBotEvent = 7517;
+
+    // Original Shockwave r26 SnowStorm (v1); separate from the later AIR SnowWar family below.
+    public static final int SnowStormGetLoungeEvent = 7700;
+    public static final int SnowStormSetGameParametersEvent = 7701;
+    public static final int SnowStormDeleteEvent = 7702;
+    public static final int SnowStormInitiateJoinEvent = 7703;
+    public static final int SnowStormSetJoinParametersEvent = 7704;
+    public static final int SnowStormLeaveEvent = 7705;
+    public static final int SnowStormKickEvent = 7706;
+    public static final int SnowStormWatchEvent = 7707;
+    public static final int SnowStormStartEvent = 7708;
+    public static final int SnowStormGameEvent = 7709;
+    public static final int SnowStormRequestFullStatusEvent = 7710;
+    public static final int SnowStormRequestFinishedGameEvent = 7711;
+    public static final int SnowStormAddBotEvent = 7712;
+    public static final int SnowStormRemoveBotEvent = 7713;
 
     public static final int UNKNOWN_SNOWSTORM_6000 = 6000;
     public static final int UNKNOWN_SNOWSTORM_6001 = 6001;

@@ -79,8 +79,14 @@ class RequestVariablesDiffMessageEventTest {
                 .isRoomVisibleStoredDefinition(WiredVariableType.USER));
         assertTrue(WiredVariableCatalogRequestSupport
                 .isRoomVisibleStoredDefinition(WiredVariableType.ROOM));
-        assertFalse(WiredVariableCatalogRequestSupport
+        assertTrue(WiredVariableCatalogRequestSupport
                 .isRoomVisibleStoredDefinition(WiredVariableType.CONTEXT));
+        assertTrue(WiredVariableCatalogRequestSupport
+                .isRoomVisibleStoredDefinition(WiredVariableType.QUEST));
+        assertTrue(WiredVariableCatalogRequestSupport
+                .isRoomVisibleStoredDefinition(WiredVariableType.QUEST_CHAIN));
+        assertFalse(WiredVariableCatalogRequestSupport
+                .isRoomVisibleStoredDefinition(WiredVariableType.UNKNOWN));
     }
 
     private static void writeString(ByteBuf packet, String value) {

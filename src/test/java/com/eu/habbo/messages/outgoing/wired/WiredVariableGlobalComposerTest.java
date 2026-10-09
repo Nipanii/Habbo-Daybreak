@@ -51,7 +51,9 @@ class WiredVariableGlobalComposerTest {
             assertEquals(0, packet.readInt()); // default user sources
             assertFalse(packet.readBoolean());
 
-            assertEquals(1, packet.readInt()); // WiredContext block count
+            assertEquals(2, packet.readInt()); // WiredContext block count
+            assertEquals(0, packet.readInt()); // catalog block
+            assertEquals(0, packet.readInt()); // no room fixture: unavailable catalog
             assertEquals(3, packet.readInt()); // Global variable + value block
             assertEquals("room:52", readString(packet));
             assertEquals(0, packet.readInt()); // stored/user-defined metadata type
@@ -59,7 +61,7 @@ class WiredVariableGlobalComposerTest {
             assertEquals(1, packet.readInt()); // availability
             assertEquals(-10, packet.readInt()); // global target
             assertTrue(packet.readBoolean());  // alwaysAvailable
-            assertTrue(packet.readBoolean());  // canCreateAndDelete
+            assertFalse(packet.readBoolean()); // canCreateAndDelete
             assertTrue(packet.readBoolean());  // hasValue
             assertTrue(packet.readBoolean());  // canWriteValue
             assertTrue(packet.readBoolean());  // canInterceptChanges

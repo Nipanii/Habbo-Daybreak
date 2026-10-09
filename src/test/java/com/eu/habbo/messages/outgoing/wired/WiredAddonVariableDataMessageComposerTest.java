@@ -60,7 +60,9 @@ class WiredAddonVariableDataMessageComposerTest {
             assertEquals(0, packet.readInt());                 // furni defaults
             assertEquals(0, packet.readInt());                 // user defaults
             assertFalse(packet.readBoolean());                 // allowWallFurni
-            assertEquals(0, packet.readInt());                 // WiredContext blocks
+            assertEquals(1, packet.readInt());                 // WiredContext blocks
+            assertEquals(0, packet.readInt());                 // catalog block
+            assertEquals(0, packet.readInt());                 // unavailable catalog hash
             assertEquals(0, packet.readInt());                 // defaultIntParams
             assertEquals(0, packet.readableBytes());
         } finally {

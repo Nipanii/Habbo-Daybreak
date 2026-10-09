@@ -96,7 +96,8 @@ abstract class WiredVariableScoped extends InteractionWiredVariable {
     @Override protected synchronized void serializeWiredContext(ServerMessage message, Room room) {
         WiredVariableManager.VariableSnapshot variable = this.manager == null ? null
                 : this.manager.variableSnapshot(variableId());
-        message.appendInt(variable == null ? 0 : 1);
+        message.appendInt(variable == null ? 1 : 2);
+        serializeVariableCatalogContext(message, room);
         if (variable == null) return;
         message.appendInt(contextBlockType());
         WiredVariableMetadata.fromDefinition(room, variable.definition()).serialize(message);

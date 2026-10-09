@@ -295,7 +295,7 @@ class WiredVariableManagerTest {
     }
 
     @Test
-    void leaveReconnectRetainsStableUserValuesButUnloadReloadsOnlyPersistentValues() {
+    void leaveClearsRoomPresenceValuesAndPreservesPermanentValues() {
         MemoryRepository repository = new MemoryRepository();
         WiredVariableDefinition persistent = definition(42, WiredVariableType.USER, 10, false);
         WiredVariableDefinition roomActive = definition(43, WiredVariableType.USER, 0, false);
@@ -309,7 +309,7 @@ class WiredVariableManagerTest {
 
         firstLoad.onUserLeaves(88);
         assertEquals(4, firstLoad.get(persistent.variableId(), WiredVariableHolder.user(88)).value());
-        assertEquals(9, firstLoad.get(roomActive.variableId(), WiredVariableHolder.user(88)).value());
+        assertNull(firstLoad.get(roomActive.variableId(), WiredVariableHolder.user(88)));
 
         // Room disposal closes only in-memory state. A new room load reads the
         // committed persistent holder value under the same stable Habbo ID.
@@ -338,6 +338,34 @@ class WiredVariableManagerTest {
         assertTrue(repository.definitionHashes.containsKey(furni.variableId()));
         assertEquals(1, repository.values.size());
         assertEquals(WiredVariableHolder.furni(77), repository.values.get(0).holder());
+    }
+
+    @Test
+    void departureDispatchCannotRecreateTemporaryValueAndDoesNotHoldMonitor() {
+        var manager = manager(new MemoryRepository(), true);
+        var temporary = definition(47, WiredVariableType.USER, 0, false);
+        var permanent = definition(48, WiredVariableType.USER, 11, false);
+        var holder = WiredVariableHolder.user(88);
+        assertTrue(manager.registerDefinition(temporary));
+        assertTrue(manager.registerDefinition(permanent));
+        manager.set(temporary.variableId(), holder, 5);
+        manager.set(permanent.variableId(), holder, 6);
+        var seen = new ArrayList<WiredVariableMutation>();
+        manager.onUserLeaves(88, mutation -> {
+            assertFalse(Thread.holdsLock(manager));
+            seen.add(mutation);
+            assertEquals(WiredVariableManager.MutationResult.UNAVAILABLE,
+                    manager.set(temporary.variableId(), holder, 7));
+            manager.onUserLeaves(88); // Re-entry must not clear the outer guard.
+            assertEquals(WiredVariableManager.MutationResult.UNAVAILABLE,
+                    manager.set(temporary.variableId(), holder, 8));
+        });
+        assertEquals(1, seen.size());
+        assertEquals(WiredVariableMutation.Kind.DELETED, seen.get(0).kind());
+        assertNull(manager.get(temporary.variableId(), holder));
+        assertEquals(6, manager.get(permanent.variableId(), holder).value());
+        assertEquals(WiredVariableManager.MutationResult.CREATED,
+                manager.set(temporary.variableId(), holder, 9));
     }
 
     @Test

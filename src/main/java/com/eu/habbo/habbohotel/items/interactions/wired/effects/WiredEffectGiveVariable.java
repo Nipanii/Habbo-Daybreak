@@ -62,11 +62,11 @@ public final class WiredEffectGiveVariable extends WiredEffectVariableBase {
         }
         String requestedId = settings.getVariableIds()[0];
         int requestedTarget = settings.getIntParams()[0];
-        validateDefinition(room, requestedId, requestedTarget, false);
+        var definition = validateOperation(room, requestedId, requestedTarget, false, true);
         saveSelections(room, settings.getFurniIds(), settings.getFurniIds2(), false);
         this.variableId = requestedId;
         this.target = requestedTarget;
-        this.initialValue = settings.getIntParams()[2];
+        this.initialValue = definition.hasValue() ? settings.getIntParams()[2] : 0;
         this.overrideExisting = settings.getIntParams()[3] == 1;
         this.setDelay(settings.getDelay());
         return true;
@@ -74,7 +74,8 @@ public final class WiredEffectGiveVariable extends WiredEffectVariableBase {
 
     @Override
     public void execute(WiredContext context) {
-        if (context == null || !WiredFeatureCapabilityGuard.isRuntimeReady(this)) {
+        if (context == null || !WiredFeatureCapabilityGuard.isRuntimeReady(this)
+                || !canOperate(context.room(), this.variableId, this.target, true)) {
             return;
         }
         if (this.target == TARGET_CONTEXT) {

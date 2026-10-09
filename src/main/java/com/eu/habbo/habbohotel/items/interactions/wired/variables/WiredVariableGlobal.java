@@ -253,7 +253,8 @@ public class WiredVariableGlobal extends InteractionWiredVariable {
     @Override
     protected synchronized void serializeWiredContext(ServerMessage message, Room room) {
         refreshValueFromManager();
-        message.appendInt(1); // block count
+        message.appendInt(2); // catalog plus global value
+        serializeVariableCatalogContext(message, room);
         message.appendInt(3); // GLOBAL_VARIABLE_INFO_AND_VALUE
         WiredVariableMetadata.roomGlobal(room, this.getId(), this.variableName, this.availability.code)
                 .serialize(message);

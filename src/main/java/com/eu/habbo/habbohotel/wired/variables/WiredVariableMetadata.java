@@ -1,6 +1,8 @@
 package com.eu.habbo.habbohotel.wired.variables;
 
 import com.eu.habbo.habbohotel.items.interactions.wired.addons.WiredAddonVariablePlaceholder;
+import com.eu.habbo.habbohotel.items.interactions.wired.variables.WiredVariableEcho;
+import com.eu.habbo.habbohotel.items.interactions.wired.variables.WiredVariableReference;
 import com.eu.habbo.habbohotel.rooms.Room;
 import com.eu.habbo.habbohotel.wired.WiredVariableType;
 import com.eu.habbo.messages.ServerMessage;
@@ -10,6 +12,8 @@ import java.util.Map;
 /** Serializes one July WiredVariable metadata record. */
 public final class WiredVariableMetadata {
     public static final int STORED_VARIABLE_TYPE = 0;
+    public static final int ALIAS_VARIABLE_TYPE = 2;
+    public static final int DYNAMIC_VARIABLE_TYPE = 3;
     public static final int GLOBAL_TARGET = -10;
 
     private final String variableId;
@@ -86,34 +90,109 @@ public final class WiredVariableMetadata {
         if (definition == null) {
             throw new IllegalArgumentException("definition is required");
         }
+        if (room != null && room.getRoomSpecialTypes() != null) {
+            var item = room.getRoomSpecialTypes().getVariable(definition.definitionItemId());
+            if (item instanceof WiredVariableReference || item instanceof WiredVariableEcho) {
+                var source = WiredVariableAliasOperations.resolve(room, definition.variableId());
+                WiredVariableMetadata effective = source == null
+                        ? ordinaryDefinition(room, definition)
+                        : sourceMetadata(room, source);
+                WiredVariableMetadata alias = effective.alias(definition.variableId(), definition.name(),
+                        source == null || source.readOnly(),
+                        WiredAddonVariablePlaceholder.textConverterValues(room, definition.variableId()));
+                return source == null ? alias.unavailableAlias() : alias;
+            }
+        }
+        return ordinaryDefinition(room, definition);
+    }
+
+    private static WiredVariableMetadata sourceMetadata(Room room, WiredVariableAliasOperations.Resolved source) {
+        var internal = WiredInternalVariableRuntime.definitions().stream()
+                .filter(value -> value.variableId().equals(source.variableId())).findFirst().orElse(null);
+        if (internal != null) return internal(internal);
+        // Synthetic generated definitions preserve the source target for runtime
+        // operations; metadata must preserve its dynamic category and presence.
+        var environment = com.eu.habbo.Emulator.getGameEnvironment();
+        Room sourceRoom = source.manager().roomId() == room.getId() ? room
+                : environment == null ? null : environment.getRoomManager().getRoom(source.manager().roomId());
+        WiredVariableDefinition parent = WiredGeneratedVariableRuntime.parentDefinition(sourceRoom, source.variableId());
+        if (parent != null) return generated(sourceRoom, source.variableId(), source.definition().name(), parent);
+        return ordinaryDefinition(sourceRoom, source.definition());
+    }
+
+    private static WiredVariableMetadata ordinaryDefinition(Room room, WiredVariableDefinition definition) {
         int target = switch (definition.type()) {
             case FURNI -> 0;
             case USER, QUEST, QUEST_CHAIN -> 1;
             case ROOM -> GLOBAL_TARGET;
+            case CONTEXT -> WiredInternalVariableRuntime.TARGET_CONTEXT;
             default -> throw new IllegalArgumentException(
                     "definition is not room-visible: " + definition.type());
         };
         if (definition.type() == WiredVariableType.QUEST
                 || definition.type() == WiredVariableType.QUEST_CHAIN) {
             return readOnlyStored(definition.variableId(), definition.name(),
-                    definition.availabilityCode(), target);
+                    definition.availabilityCode(), target).visibility(definition.invisible());
+        }
+        if (definition.type() == WiredVariableType.CONTEXT) {
+            return context(definition.variableId(), definition.name(), definition.hasValue())
+                    .visibility(definition.invisible());
         }
         return stored(definition.variableId(), definition.name(), definition.availabilityCode(), target,
-                definition.hasValue(), WiredAddonVariablePlaceholder.textConverterValues(room, definition.variableId()));
+                definition.hasValue(), WiredAddonVariablePlaceholder.textConverterValues(room, definition.variableId()))
+                .visibility(definition.invisible());
     }
+
+    public static WiredVariableMetadata context(String variableId, String name, boolean hasValue) {
+        return new WiredVariableMetadata(variableId, STORED_VARIABLE_TYPE, name, 0,
+                WiredInternalVariableRuntime.TARGET_CONTEXT, false, true, hasValue, hasValue,
+                false, false, false, false, Map.of());
+    }
+
+    /** Alias identity is local, while all capabilities follow its authoritative source. */
+    public WiredVariableMetadata alias(String variableId, String name, boolean readOnly,
+                                       Map<Long, String> connectorValues) {
+        return new WiredVariableMetadata(variableId, ALIAS_VARIABLE_TYPE, name, this.availability,
+                this.variableTarget, this.alwaysAvailable, this.canCreateAndDelete && !readOnly,
+                this.hasValue, this.canWriteValue && !readOnly, this.canInterceptChanges,
+                this.invisible, this.canReadCreationTime, this.canReadLastUpdateTime, connectorValues);
+    }
+
+    private WiredVariableMetadata unavailableAlias() {
+        return new WiredVariableMetadata(this.variableId, this.variableType, this.variableName,
+                this.availability, this.variableTarget, false, false, this.hasValue, false,
+                false, this.invisible, false, false, this.textConnectorValues);
+    }
+
+    private WiredVariableMetadata visibility(boolean invisible) {
+        return new WiredVariableMetadata(this.variableId, this.variableType, this.variableName,
+                this.availability, this.variableTarget, this.alwaysAvailable, this.canCreateAndDelete,
+                this.hasValue, this.canWriteValue, this.canInterceptChanges, invisible,
+                this.canReadCreationTime, this.canReadLastUpdateTime, this.textConnectorValues);
+    }
+
+    public boolean invisible() { return this.invisible; }
+    public boolean canCreateAndDelete() { return this.canCreateAndDelete; }
+    public boolean canWriteValue() { return this.canWriteValue; }
+    public boolean canInterceptChanges() { return this.canInterceptChanges; }
+    public boolean hasValue() { return this.hasValue; }
+    public boolean alwaysAvailable() { return this.alwaysAvailable; }
+    public boolean canReadCreationTime() { return this.canReadCreationTime; }
+    public boolean canReadLastUpdateTime() { return this.canReadLastUpdateTime; }
 
     public static WiredVariableMetadata generated(String variableId, String variableName,
                                                    WiredVariableDefinition parent) {
+        return generated(null, variableId, variableName, parent);
+    }
+
+    public static WiredVariableMetadata generated(Room room, String variableId, String variableName,
+                                                   WiredVariableDefinition parent) {
         if (parent == null) throw new IllegalArgumentException("parent is required");
-        int target = switch (parent.type()) {
-            case FURNI -> 0;
-            case USER -> 1;
-            case ROOM -> GLOBAL_TARGET;
-            default -> throw new IllegalArgumentException("generated parent is not room-visible");
-        };
-        return new WiredVariableMetadata(variableId, STORED_VARIABLE_TYPE, variableName,
-                parent.availabilityCode(), target, true, false, true, false, false,
-                false, false, false, Map.of());
+        WiredVariableMetadata parentMetadata = fromDefinition(room, parent);
+        return new WiredVariableMetadata(variableId, DYNAMIC_VARIABLE_TYPE, variableName,
+                parentMetadata.availability, parentMetadata.variableTarget, parentMetadata.alwaysAvailable,
+                false, true, false, false,
+                parentMetadata.invisible, false, false, Map.of());
     }
 
     /** July variable type 1: calculated engine value exposed in the Internal tab. */
@@ -132,7 +211,7 @@ public final class WiredVariableMetadata {
                 false,
                 true,
                 definition.writable(),
-                false,
+                definition.writable() || definition.runtimeObservable(),
                 false,
                 false,
                 false,
@@ -186,10 +265,10 @@ public final class WiredVariableMetadata {
                 name == null ? "" : name,
                 availability,
                 target,
-                true,
+                target == GLOBAL_TARGET,
+                target != GLOBAL_TARGET,
                 hasValue,
                 hasValue,
-                true,
                 true,
                 false,
                 true,

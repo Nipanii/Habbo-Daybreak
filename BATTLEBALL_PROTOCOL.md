@@ -6,6 +6,26 @@ specified otherwise, integers are signed 32-bit values, strings use Arcturus len
 and booleans use the normal Arcturus one-byte encoding. Receivers reject invalid counts, identifiers,
 coordinates, enum values, versions, and trailing payload.
 
+BattleBall uses the hotel-wide ticket currency configured by `hotel.ticket.currency.type` (default
+106). Headers 7515, 7621 and 7622 are neutral ticket purchase/balance messages shared with other
+classic ticketed public-room activities; they retain their existing wire layouts.
+
+The former `battleball.ticket.currency.type` key is migration input only. Both BattleBall SQL paths
+copy its value to `hotel.ticket.currency.type` when the neutral key does not already exist, create
+the neutral key with value 106 when neither exists, and then remove the old key. An administrator's
+existing neutral value is never overwritten.
+
+## Settings
+
+| Setting | Default | Meaning |
+|---|---:|---|
+| `hotel.ticket.currency.type` | `106` | Hotel-wide ticket activity-point type shared by classic ticketed public-room activities |
+| `battleball.ticket.cost` | `2` | Tickets charged to each human participant immediately before a BattleBall round starts |
+| `battleball.ranked.requires.human.opponent` | `1` | Requires humans on at least two teams before a round can update ranked BattleBall results |
+
+The currency type is shared; the entry cost and ranking policy remain BattleBall-specific. A future
+SnowStorm implementation therefore uses the same balance but owns its own `snowstorm.ticket.cost`.
+
 ## Shared limits and enums
 
 - Status protocol version: `2`
@@ -48,6 +68,21 @@ coordinates, enum values, versions, and trailing payload.
 Movement and power activation are requests only. Arcturus remains authoritative for paths, tile
 ownership, pickup ownership, effects, scoring, and match state.
 
+### Shared ticket purchase (7515)
+
+The neutral hotel-ticket handler accepts two established bundles:
+
+- Bundle 1 costs 1 credit and adds 2 tickets.
+- Bundle 2 costs 6 credits and adds 20 tickets.
+- An empty recipient buys for the requesting user. A non-empty recipient is trimmed, limited to 32
+  characters on the wire, and resolved by exact database username; that recipient may be offline.
+
+Purchases are limited to one request per second per client. The server validates the entire payload
+and rejects trailing data. Buyer credit debit, recipient lookup and ticket credit occur in one
+database transaction. A failed lookup, insufficient balance or database failure changes neither
+wallet. Online in-memory balances are updated only after commit, then the buyer receives the normal
+credit-balance packet and the recipient receives both 7621 and the normal activity-point update.
+
 ## Server to client
 
 All game-bearing messages carry `instanceId`. Status packets carry a monotonically increasing
@@ -80,6 +115,10 @@ a base ahead of the client proves a gap and requests a throttled 7514/7612 recov
 | 7621 | TicketBalance | `ticketBalance:int` |
 | 7622 | TicketPurchaseResult | `status:int, recipient:string, ticketsAdded:int` |
 
+Ticket purchase result statuses are `0=success`, `1=insufficient-credits`,
+`2=recipient-not-found`, `3=invalid-bundle`, and `4=database-error`. Failure responses carry an
+empty recipient and zero tickets added. On success, `recipient` is the database-canonical username.
+
 An instance summary is:
 
 `instanceId:int, name:string, ownerUserId:int, ownerName:string, mapId:byte, state:byte,
@@ -88,7 +127,9 @@ private:boolean, teamCount:byte, playerCount:byte, capacity:byte, roundSeconds:s
 Team scores are `count:byte`, followed by `(teamId:byte, score:int)`. Final player scores are
 `count:short`, followed by `(userId:int, score:int)`; negative user IDs are match-local bots.
 An aborted round uses `winningTeam=-1`, remains recorded for ticket/accounting reconciliation, and
-does not update ranked player aggregates, skill levels, or the Games Hall leaderboard.
+does not update ranked player aggregates, skill levels, or the BattleBall high-score ranking. The
+existing leaderboard backend may be reused internally, but BattleBall is not categorized as a Game
+Hall game.
 
 ## Full snapshot (7612)
 

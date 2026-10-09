@@ -174,6 +174,9 @@ public class Habbo implements Runnable {
         if (Emulator.getGameEnvironment().getBattleBallManager() != null) {
             Emulator.getGameEnvironment().getBattleBallManager().disconnected(this.habboInfo.getId());
         }
+        if (Emulator.getGameEnvironment().getSnowStormManager() != null) {
+            Emulator.getGameEnvironment().getSnowStormManager().disconnect(this.habboInfo.getId());
+        }
 
         try {
             if (this.getHabboInfo().getCurrentRoom() != null) {

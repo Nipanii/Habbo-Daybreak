@@ -185,7 +185,7 @@ public final class WiredCrossRoomAliasRepository {
             WiredVariableHolder holder,
             ValueTransform transform) {
         return mutateAliasValue(originRoomId, aliasVariableId, holder,
-                transform, false, false);
+                transform, false, false, true);
     }
 
     public WiredVariableMutation setAliasValue(
@@ -195,7 +195,7 @@ public final class WiredCrossRoomAliasRepository {
             int value,
             boolean onlyIfAbsent) {
         return mutateAliasValue(originRoomId, aliasVariableId, holder,
-                current -> OptionalInt.of(value), onlyIfAbsent, false);
+                current -> OptionalInt.of(value), onlyIfAbsent, false, false);
     }
 
     public WiredVariableMutation removeAliasValue(
@@ -203,7 +203,7 @@ public final class WiredCrossRoomAliasRepository {
             String aliasVariableId,
             WiredVariableHolder holder) {
         return mutateAliasValue(originRoomId, aliasVariableId, holder,
-                current -> OptionalInt.empty(), false, true);
+                current -> OptionalInt.empty(), false, true, false);
     }
 
     private WiredVariableMutation mutateAliasValue(
@@ -212,7 +212,7 @@ public final class WiredCrossRoomAliasRepository {
             WiredVariableHolder holder,
             ValueTransform transform,
             boolean onlyIfAbsent,
-            boolean remove) {
+            boolean remove, boolean numericTransform) {
         if (originRoomId <= 0 || blank(aliasVariableId)
                 || holder == null || transform == null
                 || Emulator.getDatabase() == null) {
@@ -226,7 +226,7 @@ public final class WiredCrossRoomAliasRepository {
             try {
                 DurableTarget target = resolveWritableTarget(
                         connection, originRoomId, aliasVariableId, holder);
-                if (target == null) {
+                if (target == null || numericTransform && !target.hasValue()) {
                     connection.rollback();
                     return null;
                 }
@@ -256,7 +256,7 @@ public final class WiredCrossRoomAliasRepository {
                     connection.rollback();
                     return null;
                 }
-                int after = remove ? 0 : transformed.getAsInt();
+                int after = remove || !target.hasValue() ? 0 : transformed.getAsInt();
                 if (!remove && current != null && before == after) {
                     connection.rollback();
                     return null;
@@ -336,7 +336,6 @@ public final class WiredCrossRoomAliasRepository {
 
             if (!followedAlias
                     || readOnly
-                    || !entry.hasValue()
                     || entry.availability()
                     != WiredVariableAvailability.SHARED_PERMANENT.code
                     || entry.scope() != holder.scope().code
@@ -344,7 +343,7 @@ public final class WiredCrossRoomAliasRepository {
                     && roomId != originRoomId)) {
                 return null;
             }
-            return new DurableTarget(roomId, variableId, entry.itemId());
+            return new DurableTarget(roomId, variableId, entry.itemId(), entry.hasValue());
         }
         return null;
     }
@@ -620,7 +619,7 @@ public final class WiredCrossRoomAliasRepository {
         OptionalInt apply(int current);
     }
 
-    private record DurableTarget(int roomId, String variableId, int definitionItemId) {
+    private record DurableTarget(int roomId, String variableId, int definitionItemId, boolean hasValue) {
     }
 
     private record StoredValue(int value, long createdAt) {

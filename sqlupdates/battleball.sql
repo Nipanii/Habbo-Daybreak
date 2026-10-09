@@ -233,18 +233,90 @@ CREATE TABLE IF NOT EXISTS `battleball_player_stats` (
   PRIMARY KEY (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Tickets are shared by multiple classic public-room activities, not owned by BattleBall.
+-- Preserve an administrator's existing currency type while migrating the old key.
+INSERT INTO `emulator_settings` (`key`, `value`)
+SELECT 'hotel.ticket.currency.type', `value`
+FROM `emulator_settings`
+WHERE `key` = 'battleball.ticket.currency.type'
+ON DUPLICATE KEY UPDATE `value` = `value`;
+
+INSERT INTO `emulator_settings` (`key`, `value`) VALUES
+  ('hotel.ticket.currency.type', '106')
+ON DUPLICATE KEY UPDATE `value` = `value`;
+
+DELETE FROM `emulator_settings` WHERE `key` = 'battleball.ticket.currency.type';
+
+-- Migrate the early singular bot-setting names without losing administrator values.
+INSERT IGNORE INTO `emulator_settings` (`key`, `value`)
+SELECT 'battleball.bots.decision.interval.ms', `value` FROM `emulator_settings`
+WHERE `key` = 'battleball.bot.decision.milliseconds';
+INSERT IGNORE INTO `emulator_settings` (`key`, `value`)
+SELECT 'battleball.bots.search-radius.tiles', `value` FROM `emulator_settings`
+WHERE `key` = 'battleball.bot.search.radius';
+INSERT IGNORE INTO `emulator_settings` (`key`, `value`)
+SELECT 'battleball.bots.figures', `value` FROM `emulator_settings`
+WHERE `key` = 'battleball.bot.figures';
+DELETE FROM `emulator_settings` WHERE `key` IN (
+  'battleball.bot.decision.milliseconds',
+  'battleball.bot.search.radius',
+  'battleball.bot.figures'
+);
+
 INSERT INTO `emulator_settings` (`key`, `value`) VALUES
   ('battleball.enabled', '0'),
-  ('battleball.ticket.currency.type', '106'),
   ('battleball.ticket.cost', '2'),
   ('battleball.bots.enabled', '1'),
   ('battleball.bots.max-per-game', '8'),
   ('battleball.ranked.requires.human.opponent', '1'),
-  ('battleball.bot.decision.milliseconds', '1500'),
-  ('battleball.bot.search.radius', '8'),
-  ('battleball.bot.figures', 'hr-100.hd-190-7.ch-210-66.lg-270-82.sh-290-80,hr-100-61.hd-190-1.ch-210-92.lg-270-82.sh-290-80,hr-115-42.hd-195-19.ch-3030-82.lg-275-1408.fa-1201.ca-1804-64,ch-665-92.hd-629-1.sh-740-92.hr-515-31.lg-3174-71-92.he-3082-92'),
+  ('battleball.bots.decision.interval.ms', '1500'),
+  ('battleball.bots.search-radius.tiles', '8'),
+  ('battleball.bots.figures', 'hr-100.hd-190-7.ch-210-66.lg-270-82.sh-290-80,hr-100-61.hd-190-1.ch-210-92.lg-270-82.sh-290-80,hr-115-42.hd-195-19.ch-3030-82.lg-275-1408.fa-1201.ca-1804-64,ch-665-92.hd-629-1.sh-740-92.hr-515-31.lg-3174-71-92.he-3082-92'),
   ('battleball.max.instances', '100'),
   ('battleball.max.spectators', '50'),
   ('battleball.idle.timeout.seconds', '60'),
   ('battleball.idle.warning.seconds', '15')
 ON DUPLICATE KEY UPDATE `value` = VALUES(`value`);
+
+-- Shared, room-scoped leaderboard catalogue and metric store.
+CREATE TABLE IF NOT EXISTS `leaderboards` (
+  `id` INT(11) NOT NULL AUTO_INCREMENT,
+  `room_id` INT(11) NOT NULL,
+  `game_type` VARCHAR(32) NOT NULL,
+  `metric` VARCHAR(32) NOT NULL,
+  `title_localization_code` VARCHAR(128) NOT NULL,
+  `description_localization_code` VARCHAR(128) NOT NULL,
+  `menu_localization_code` VARCHAR(128) NOT NULL,
+  `sort_order` INT(11) NOT NULL DEFAULT 0,
+  `enabled` TINYINT(1) NOT NULL DEFAULT 1,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_leaderboards_room_game_metric` (`room_id`, `game_type`, `metric`),
+  KEY `idx_leaderboards_room_enabled_sort` (`room_id`, `enabled`, `sort_order`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+DROP TABLE IF EXISTS `gamehall_leaderboard_stats`;
+
+CREATE TABLE IF NOT EXISTS `leaderboard_stats` (
+  `game_type` VARCHAR(32) NOT NULL,
+  `metric` VARCHAR(32) NOT NULL,
+  `period_type` VARCHAR(16) NOT NULL,
+  `period_start` BIGINT(20) NOT NULL DEFAULT 0,
+  `user_id` INT(11) NOT NULL,
+  `value` INT(11) NOT NULL DEFAULT 0,
+  `last_result_at` BIGINT(20) NOT NULL DEFAULT 0,
+  PRIMARY KEY (`game_type`, `metric`, `period_type`, `period_start`, `user_id`),
+  KEY `idx_leaderboard_stats_rank` (`game_type`, `metric`, `period_type`, `period_start`, `value`, `last_result_at`),
+  KEY `idx_leaderboard_stats_user` (`user_id`, `game_type`, `metric`, `period_type`, `period_start`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT INTO `leaderboards`
+  (`room_id`, `game_type`, `metric`, `title_localization_code`,
+   `description_localization_code`, `menu_localization_code`, `sort_order`, `enabled`)
+SELECT `id`, 'BATTLEBALL', 'POINTS', 'gamehall.leaderboard.option.battleball',
+       'gamehall.leaderboard.info.battleball', 'gamehall.leaderboard.dropdown.battleball', 0, 1
+FROM `rooms` WHERE `model` = 'bb_lobby_1'
+ON DUPLICATE KEY UPDATE
+  `title_localization_code` = VALUES(`title_localization_code`),
+  `description_localization_code` = VALUES(`description_localization_code`),
+  `menu_localization_code` = VALUES(`menu_localization_code`),
+  `sort_order` = VALUES(`sort_order`), `enabled` = 1;

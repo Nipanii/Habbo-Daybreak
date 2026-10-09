@@ -35,6 +35,29 @@ public final class GridPathfinder {
     public static List<Step> findPath(Grid grid, int startX, int startY, int targetX, int targetY,
                                       double maximumStepHeight, boolean allowFalling,
                                       boolean retroStyleDiagonals) {
+        return findPath(grid, startX, startY, targetX, targetY, maximumStepHeight, allowFalling,
+                retroStyleDiagonals, false);
+    }
+
+    /** Finds the same deterministic route as {@link #findPath}, without materializing its tail. */
+    public static Step findNextStep(Grid grid, int startX, int startY, int targetX, int targetY,
+                                    double maximumStepHeight, boolean allowFalling,
+                                    boolean retroStyleDiagonals) {
+        List<Step> result = findPath(grid, startX, startY, targetX, targetY, maximumStepHeight,
+                allowFalling, retroStyleDiagonals, true);
+        return result.isEmpty() ? null : result.getFirst();
+    }
+
+    private static List<Step> findPath(
+            Grid grid,
+            int startX,
+            int startY,
+            int targetX,
+            int targetY,
+            double maximumStepHeight,
+            boolean allowFalling,
+            boolean retroStyleDiagonals,
+            boolean firstStepOnly) {
         if (!inside(grid, startX, startY) || !inside(grid, targetX, targetY)
                 || (startX == targetX && startY == targetY)
                 || !grid.isWalkable(targetX, targetY) || grid.isOccupied(targetX, targetY)) {
@@ -60,7 +83,9 @@ public final class GridPathfinder {
             Node current = open.poll();
             if (closed[current.x][current.y] || current.g != costs[current.x][current.y]) continue;
             if (current.x == targetX && current.y == targetY) {
-                return trace(startX, startY, targetX, targetY, previousX, previousY);
+                return firstStepOnly
+                        ? List.of(traceFirst(startX, startY, targetX, targetY, previousX, previousY))
+                        : trace(startX, startY, targetX, targetY, previousX, previousY);
             }
             closed[current.x][current.y] = true;
 
@@ -115,6 +140,19 @@ public final class GridPathfinder {
             if (x < 0 || y < 0) return List.of();
         }
         return Collections.unmodifiableList(new ArrayList<>(path));
+    }
+
+    private static Step traceFirst(int startX, int startY, int targetX, int targetY,
+                                   int[][] previousX, int[][] previousY) {
+        int x = targetX;
+        int y = targetY;
+        while (previousX[x][y] != startX || previousY[x][y] != startY) {
+            int oldX = x;
+            x = previousX[x][y];
+            y = previousY[oldX][y];
+            if (x < 0 || y < 0) throw new IllegalStateException("Broken path predecessor chain");
+        }
+        return new Step(x, y);
     }
 
     private static boolean inside(Grid grid, int x, int y) {

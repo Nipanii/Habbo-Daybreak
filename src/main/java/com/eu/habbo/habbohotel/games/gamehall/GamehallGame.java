@@ -193,8 +193,8 @@ public abstract class GamehallGame {
 
         sendUpdate(winner, "GAMEEND", RESULT_WIN, winnerName, loserName);
         sendUpdate(loser, "GAMEEND", RESULT_LOSE, winnerName, loserName);
-        if (Emulator.getGameEnvironment() != null && Emulator.getGameEnvironment().getGamehallLeaderboardManager() != null) {
-            Emulator.getGameEnvironment().getGamehallLeaderboardManager().recordWin(
+        if (Emulator.getGameEnvironment() != null && Emulator.getGameEnvironment().getLeaderboardManager() != null) {
+            Emulator.getGameEnvironment().getLeaderboardManager().recordWin(
                     this.type,
                     this.room.getId(),
                     this.stationId,

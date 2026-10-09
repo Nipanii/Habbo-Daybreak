@@ -585,7 +585,7 @@ public final class BattleBallGame {
 
     private String botFigure(int index) {
         String configured = Emulator.getConfig() == null ? DEFAULT_BOT_FIGURES
-                : Emulator.getConfig().getValue("battleball.bot.figures", DEFAULT_BOT_FIGURES);
+                : Emulator.getConfig().getValue("battleball.bots.figures", DEFAULT_BOT_FIGURES);
         List<String> figures = new ArrayList<>();
         for (String value : configured.split(",")) if (!value.isBlank()) figures.add(value.trim());
         if (figures.isEmpty()) figures.add(DEFAULT_BOT_FIGURES.substring(0, DEFAULT_BOT_FIGURES.indexOf(',')));

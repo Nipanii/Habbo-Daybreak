@@ -96,13 +96,14 @@ public final class WiredAddonVariablePlaceholder extends InteractionWiredAddon {
 
     private List<Integer> resolveValues(WiredContext context) {
         if (this.target == TARGET_CONTEXT) {
-            Integer value = context.contextVariables().get(this.variableId);
+            Integer value = com.eu.habbo.habbohotel.wired.variables.WiredVariableAliasOperations.readContext(context, this.variableId);
             return value == null ? List.of() : List.of(value);
         }
         WiredVariableManager manager = context.room().getRoomSpecialTypes().getWiredVariableManager();
         if (manager == null || !manager.isOperational()) return List.of();
         if (this.target == TARGET_GLOBAL) {
-            WiredVariableValue value = manager.get(this.variableId, WiredVariableHolder.room());
+            WiredVariableValue value = com.eu.habbo.habbohotel.wired.variables.WiredVariableAliasOperations.readValue(
+                    context.room(), this.variableId, WiredVariableHolder.room());
             if (value == null) value = WiredGeneratedVariableRuntime.read(context.room(), this.variableId,
                     WiredVariableHolder.room());
             Integer internal = value == null
@@ -143,7 +144,8 @@ public final class WiredAddonVariablePlaceholder extends InteractionWiredAddon {
         }
         List<Integer> values = new ArrayList<>();
         for (WiredVariableHolder holder : holders) {
-            WiredVariableValue value = manager.get(this.variableId, holder);
+            WiredVariableValue value = com.eu.habbo.habbohotel.wired.variables.WiredVariableAliasOperations.readValue(
+                    context.room(), this.variableId, holder);
             if (value == null) value = WiredGeneratedVariableRuntime.read(context.room(), this.variableId, holder);
             Integer internalValue = value == null
                     ? WiredInternalVariableRuntime.read(
@@ -194,6 +196,9 @@ public final class WiredAddonVariablePlaceholder extends InteractionWiredAddon {
         if (WiredInternalVariableRuntime.matches(id, target)) return true;
         if (!id.startsWith("room:")) return false;
         if (target == TARGET_CONTEXT) {
+            var alias = com.eu.habbo.habbohotel.wired.variables.WiredVariableAliasOperations.resolve(room, id);
+            if (alias != null && alias.definition().type() == com.eu.habbo.habbohotel.wired.WiredVariableType.CONTEXT)
+                return alias.definition().hasValue();
             try {
                 return room.getRoomSpecialTypes().getVariable(Integer.parseInt(id.substring(5))) instanceof WiredVariableContext value && value.hasValue();
             } catch (NumberFormatException ignored) { return false; }

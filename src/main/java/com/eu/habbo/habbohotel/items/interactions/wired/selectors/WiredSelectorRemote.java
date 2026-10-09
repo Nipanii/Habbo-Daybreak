@@ -187,6 +187,19 @@ public final class WiredSelectorRemote extends InteractionWiredSelector {
     }
 
     @Override
+    protected boolean sanitizeSelectedItems(Room room) {
+        if (room == null) {
+            return false;
+        }
+        return this.referenceItemIds.removeIf(referenceItemId -> {
+            HabboItem item = room.getHabboItemByDatabaseId(referenceItemId);
+            return !isLegalCurrentReference(room, item)
+                    || item.getId() == this.getId()
+                    || (item.getX() == this.getX() && item.getY() == this.getY());
+        });
+    }
+
+    @Override
     protected int[] getWiredIntParams() {
         return new int[] {this.aggregation, this.randomAmount};
     }

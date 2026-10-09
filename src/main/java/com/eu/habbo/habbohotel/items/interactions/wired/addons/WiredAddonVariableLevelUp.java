@@ -31,7 +31,7 @@ public final class WiredAddonVariableLevelUp extends InteractionWiredAddon {
     private static final int DEFAULT_BASE_XP = 100;
     private static final int DEFAULT_INCREASE_FACTOR = 20;
     private static final int DEFAULT_MAX_LEVEL = 50;
-    private static final int MAX_LEVEL = 1000;
+    private static final int MAX_LEVEL = 100000;
     private static final int MAX_VALUE = 100000;
     private static final int MAX_MANUAL_CHARACTERS = 1000;
     private static final int MAX_MANUAL_LINES = 1000;
@@ -195,8 +195,8 @@ public final class WiredAddonVariableLevelUp extends InteractionWiredAddon {
     }
 
     /**
-     * Pure level-state calculation matching the existing Level Up donor's level,
-     * cap, progress, and rounded exponential-step semantics.
+     * Pure level-state calculation. Integer XP thresholds follow July's editor
+     * preview; the runtime's existing capped-value convention is preserved.
      */
     public static LevelState calculate(LevelConfiguration configuration, long rawXp) {
         if (configuration == null) {
@@ -254,6 +254,7 @@ public final class WiredAddonVariableLevelUp extends InteractionWiredAddon {
         }
 
         public static LevelConfiguration manual(int subvariableMask, String interpolation) {
+            validateMask(subvariableMask);
             Map<Integer, Long> requirements = parseManualText(interpolation);
             return new LevelConfiguration(normalizeMask(subvariableMask), MODE_MANUAL, DEFAULT_STEP_SIZE,
                     DEFAULT_BASE_XP, DEFAULT_INCREASE_FACTOR, DEFAULT_MAX_LEVEL,
@@ -297,7 +298,7 @@ public final class WiredAddonVariableLevelUp extends InteractionWiredAddon {
         }
 
         private int effectiveMaxLevel() {
-            if (mode != MODE_MANUAL || manualRequirements.isEmpty()) {
+            if (mode != MODE_MANUAL) {
                 return maxLevel;
             }
             int last = 1;
@@ -308,24 +309,22 @@ public final class WiredAddonVariableLevelUp extends InteractionWiredAddon {
         }
 
         private int levelForXp(long xp, int effectiveMaxLevel) {
-            int level = 1;
-            for (int current = 2; current <= effectiveMaxLevel; current++) {
-                if (xp < xpRequiredForLevel(current)) {
-                    break;
+            int lower = 1;
+            int upper = effectiveMaxLevel;
+            while (lower < upper) {
+                int middle = lower + (upper - lower + 1) / 2;
+                if (xpRequiredForLevel(middle) <= xp) {
+                    lower = middle;
+                } else {
+                    upper = middle - 1;
                 }
-                level = current;
             }
-            return Math.max(1, Math.min(level, effectiveMaxLevel));
+            return lower;
         }
 
         private long nextRequirement(int currentLevel, int effectiveMaxLevel) {
             if (mode == MODE_MANUAL) {
-                for (Map.Entry<Integer, Long> entry : manualRequirements.entrySet()) {
-                    if (entry.getKey() > currentLevel) {
-                        return entry.getValue();
-                    }
-                }
-                return maxXp(effectiveMaxLevel);
+                return xpRequiredForLevel(Math.min(effectiveMaxLevel, currentLevel + 1));
             }
             return xpRequiredForLevel(Math.min(effectiveMaxLevel + 1, currentLevel + 1));
         }
@@ -340,23 +339,27 @@ public final class WiredAddonVariableLevelUp extends InteractionWiredAddon {
         private long xpRequiredForLevel(int level) {
             int normalizedLevel = Math.max(1, level);
             if (mode == MODE_MANUAL) {
-                long previous = 0L;
+                int previousLevel = 1;
+                long previousXp = 0L;
                 for (Map.Entry<Integer, Long> entry : manualRequirements.entrySet()) {
+                    if (entry.getKey() == normalizedLevel) return entry.getValue();
                     if (entry.getKey() > normalizedLevel) {
-                        break;
+                        int levels = entry.getKey() - previousLevel;
+                        // Interpolate between anchors, including the implicit
+                        // level-one/zero-XP anchor used by July's preview.
+                        return previousXp + (long) (((double) (entry.getValue() - previousXp)
+                                / levels) * (normalizedLevel - previousLevel));
                     }
-                    previous = entry.getValue();
+                    previousLevel = entry.getKey();
+                    previousXp = entry.getValue();
                 }
-                return previous;
+                return previousXp;
             }
             if (mode == MODE_EXPONENTIAL) {
-                long total = 0L;
-                double increment = baseXp;
-                for (int current = 2; current <= normalizedLevel; current++) {
-                    total = saturatingAdd(total, Math.round(increment));
-                    increment *= 1D + (increaseFactor / 100D);
-                }
-                return total;
+                double strength = increaseFactor / 100D;
+                double total = baseXp * ((Math.pow(1D + strength, normalizedLevel - 1)
+                        - 1D + 1e-9) / strength);
+                return total >= Long.MAX_VALUE ? Long.MAX_VALUE : Math.round(total);
             }
             return saturatingMultiply((long) normalizedLevel - 1L, stepSize);
         }
@@ -414,6 +417,8 @@ public final class WiredAddonVariableLevelUp extends InteractionWiredAddon {
             throw new IllegalArgumentException("manual table has too many lines");
         }
         TreeMap<Integer, Long> parsed = new TreeMap<>();
+        int previousLevel = 1;
+        long previousXp = 0L;
         for (String rawLine : lines) {
             String line = rawLine.trim();
             if (line.isEmpty()) {
@@ -426,11 +431,13 @@ public final class WiredAddonVariableLevelUp extends InteractionWiredAddon {
             try {
                 int level = Integer.parseInt(line.substring(0, separator).trim());
                 long xp = Long.parseLong(line.substring(separator + 1).trim());
-                validateRange(level, 1, MAX_LEVEL, "manual level");
-                if (xp < 0L) {
-                    throw new IllegalArgumentException("manual xp must not be negative");
+                validateRange(level, 2, MAX_LEVEL, "manual level");
+                if (level <= previousLevel || xp <= previousXp || xp > Integer.MAX_VALUE) {
+                    throw new IllegalArgumentException("manual anchors must increase in level and integer xp");
                 }
                 parsed.put(level, xp);
+                previousLevel = level;
+                previousXp = xp;
             } catch (NumberFormatException exception) {
                 throw new IllegalArgumentException("manual values must be integers", exception);
             }

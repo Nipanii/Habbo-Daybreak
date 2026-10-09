@@ -114,7 +114,11 @@ abstract class WiredConditionVariableBase extends WiredConditionConfigBase {
         if (WiredInternalVariableRuntime.matches(variableId, targetScope)) {
             return true;
         }
-        if (targetScope == TARGET_CONTEXT) return contextDefinition(room, variableId) != null;
+        if (targetScope == TARGET_CONTEXT) {
+            var alias = WiredVariableAliasOperations.resolve(room, variableId);
+            return contextDefinition(room, variableId) != null || alias != null
+                    && alias.definition().type() == com.eu.habbo.habbohotel.wired.WiredVariableType.CONTEXT;
+        }
         WiredVariableManager manager = room.getRoomSpecialTypes().getWiredVariableManager();
         if (manager == null || !manager.isOperational()) {
             return false;
@@ -126,13 +130,31 @@ abstract class WiredConditionVariableBase extends WiredConditionConfigBase {
         return definition != null && matchesTarget(definition, targetScope);
     }
 
+    final com.eu.habbo.habbohotel.wired.variables.WiredVariableMetadata metadata(Room room, String id) {
+        var entry = com.eu.habbo.habbohotel.wired.variables.WiredVariableCatalog.forRoom(room).entries().get(id);
+        return entry == null ? null : entry.metadata();
+    }
+
+    final boolean validateNumericDefinition(Room room, String id, int target) {
+        var capabilities = metadata(room, id);
+        return validateDefinition(room, id, target) && capabilities != null && capabilities.hasValue();
+    }
+
+    final boolean hasNumericValue(Room room, String id, int target) {
+        if (WiredInternalVariableRuntime.matches(id, target)) return true;
+        var context = target == TARGET_CONTEXT ? contextDefinition(room, id) : null;
+        if (context != null) return context.hasValue();
+        var source = WiredVariableAliasOperations.resolve(room, id);
+        return source != null && source.definition().hasValue();
+    }
+
     final WiredVariableValue resolveSingleValue(WiredContext context, String variableId,
                                                 int targetScope, int sourceSlot) {
         if (context == null || context.room() == null || !isSupportedTarget(targetScope)) {
             return null;
         }
         if (targetScope == TARGET_CONTEXT) {
-            Integer value = context.contextVariables().get(variableId);
+            Integer value = WiredVariableAliasOperations.readContext(context, variableId);
             return value == null ? null : new WiredVariableValue(variableId, WiredVariableHolder.room(), value, 0, 0, 0);
         }
         WiredInternalVariableRuntime.Definition internal =
@@ -148,12 +170,8 @@ abstract class WiredConditionVariableBase extends WiredConditionConfigBase {
         if (holders.size() != 1) {
             return null;
         }
-        WiredVariableValue aliasValue = WiredVariableAliasOperations.readValue(context.room(), variableId, holders.get(0));
-        if (aliasValue != null) return aliasValue;
-        WiredVariableValue generated = WiredGeneratedVariableRuntime.read(context.room(), variableId, holders.get(0));
-        if (generated != null) return generated;
-        // A missing value is not zero: all Variable conditions fail closed.
-        return manager.get(variableId, holders.get(0));
+        // An absent source must never fall back to obsolete local alias storage.
+        return WiredVariableAliasOperations.readValue(context.room(), variableId, holders.get(0));
     }
 
     final boolean hasRegisteredDefinition(WiredContext context, String variableId, int targetScope) {
@@ -164,7 +182,7 @@ abstract class WiredConditionVariableBase extends WiredConditionConfigBase {
         if (WiredInternalVariableRuntime.matches(variableId, targetScope)) {
             return true;
         }
-        if (targetScope == TARGET_CONTEXT) return contextDefinition(context.room(), variableId) != null;
+        if (targetScope == TARGET_CONTEXT) return validateDefinition(context.room(), variableId, targetScope);
         WiredVariableManager manager = context.room().getRoomSpecialTypes().getWiredVariableManager();
         if (manager == null || !manager.isOperational()) {
             return false;

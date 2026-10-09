@@ -50,11 +50,14 @@ public final class WiredConditionVariableAge extends WiredConditionVariableBase 
             return false;
         }
         int[] params = settings.getIntParams();
+        var capabilities = metadata(room, settings.getVariableIds()[0]);
         if ((params[1] != LESS_THAN && params[1] != GREATER_THAN)
                 || (params[2] != CREATED_AT && params[2] != UPDATED_AT)
                 || !validSignedIntParts(params[3], params[4])
                 || params[5] < 0 || params[5] > 7
-                || !validateDefinition(room, settings.getVariableIds()[0], params[0])) {
+                || !validateDefinition(room, settings.getVariableIds()[0], params[0])
+                || capabilities == null || (params[2] == CREATED_AT
+                ? !capabilities.canReadCreationTime() : !capabilities.canReadLastUpdateTime())) {
             return false;
         }
         this.variableId = settings.getVariableIds()[0];

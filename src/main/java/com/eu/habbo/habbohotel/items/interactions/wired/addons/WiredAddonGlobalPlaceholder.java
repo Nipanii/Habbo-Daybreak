@@ -120,7 +120,8 @@ public final class WiredAddonGlobalPlaceholder extends InteractionWiredAddon {
             }
         }
         entries.sort(Comparator.comparing(Entry::roomName).thenComparing(Entry::name).thenComparingInt(Entry::roomId));
-        message.appendInt(1); message.appendInt(6); message.appendInt(entries.size());
+        message.appendInt(2); serializeVariableCatalogContext(message, room);
+        message.appendInt(6); message.appendInt(entries.size());
         for (Entry entry : entries) {
             message.appendInt(entry.roomId()); message.appendString(entry.roomName()); message.appendString(entry.name());
         }

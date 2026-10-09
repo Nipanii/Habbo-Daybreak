@@ -16,6 +16,7 @@ import com.eu.habbo.Emulator;
 import com.eu.habbo.core.ConfigurationManager;
 import com.eu.habbo.habbohotel.GameEnvironment;
 import com.eu.habbo.habbohotel.gameclients.GameClient;
+import com.eu.habbo.habbohotel.tickets.HotelTicketService;
 import com.eu.habbo.habbohotel.users.Habbo;
 import com.eu.habbo.habbohotel.users.HabboGender;
 import com.eu.habbo.habbohotel.users.HabboInfo;
@@ -31,12 +32,54 @@ import org.mockito.MockedStatic;
 
 class BattleBallManagerTest {
     @Test
+    void roomLeaveDeletesAnOwnersLobbyAndClearsEveryMembership() throws Exception {
+        ConfigurationManager config = mock(ConfigurationManager.class);
+        when(config.getBoolean("battleball.enabled", false)).thenReturn(false);
+        GameEnvironment environment = mock(GameEnvironment.class);
+        HabboManager habboManager = mock(HabboManager.class);
+        HotelTicketService ticketService = mock(HotelTicketService.class);
+        when(environment.getHabboManager()).thenReturn(habboManager);
+        when(environment.getHotelTicketService()).thenReturn(ticketService);
+
+        Habbo owner = habbo(1, "owner", 20);
+        Habbo opponent = habbo(2, "opponent", 20);
+        when(habboManager.getHabbo(1)).thenReturn(owner);
+        when(habboManager.getHabbo(2)).thenReturn(opponent);
+
+        try (MockedStatic<Emulator> emulator = mockStatic(Emulator.class)) {
+            emulator.when(Emulator::getConfig).thenReturn(config);
+            emulator.when(Emulator::getGameEnvironment).thenReturn(environment);
+            BattleBallManager manager = new BattleBallManager();
+            set(manager, "enabled", true);
+
+            BattleBallGame game = game(91);
+            assertTrue(game.addPlayer(1, "owner", "", "", "M", 0));
+            assertTrue(game.addPlayer(2, "opponent", "", "", "F", 1));
+            games(manager).put(game.id(), game);
+            memberships(manager).put(1, game.id());
+            memberships(manager).put(2, game.id());
+
+            manager.roomLeave(1);
+
+            assertFalse(games(manager).containsKey(game.id()));
+            assertFalse(memberships(manager).containsKey(1));
+            assertFalse(memberships(manager).containsKey(2));
+            assertEquals(BattleBallState.DISPOSED, game.state());
+
+            manager.dispose();
+        }
+    }
+
+    @Test
     void promotionStateGuardsEvictionAndSharedMutationBackoffWorkTogether() throws Exception {
         ConfigurationManager config = mock(ConfigurationManager.class);
         when(config.getBoolean("battleball.enabled", false)).thenReturn(false);
         GameEnvironment environment = mock(GameEnvironment.class);
         HabboManager habboManager = mock(HabboManager.class);
+        HotelTicketService ticketService = mock(HotelTicketService.class);
         when(environment.getHabboManager()).thenReturn(habboManager);
+        when(environment.getHotelTicketService()).thenReturn(ticketService);
+        when(ticketService.balance(any(Habbo.class))).thenReturn(20);
 
         Habbo owner = habbo(1, "owner", 20);
         Habbo opponent = habbo(2, "opponent", 20);

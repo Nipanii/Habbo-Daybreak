@@ -25,8 +25,10 @@ import com.eu.habbo.messages.incoming.friends.*;
 import com.eu.habbo.messages.incoming.games.SnowStormGameUnloadedMessageEvent;
 import com.eu.habbo.messages.incoming.gamecenter.*;
 import com.eu.habbo.messages.incoming.games.gamehall.GameBoardMoveMessageEvent;
-import com.eu.habbo.messages.incoming.games.gamehall.RequestGamehallLeaderboardMessageEvent;
+import com.eu.habbo.messages.incoming.games.leaderboards.RequestLeaderboardMessageEvent;
 import com.eu.habbo.messages.incoming.games.battleball.*;
+import com.eu.habbo.messages.incoming.games.snowstorm.*;
+import com.eu.habbo.messages.incoming.games.tickets.BuyTicketsEvent;
 import com.eu.habbo.messages.incoming.guardians.ChatReviewGuideDecidesOnOfferMessageEvent;
 import com.eu.habbo.messages.incoming.guardians.ChatReviewGuideDetachedMessageEvent;
 import com.eu.habbo.messages.incoming.guardians.ChatReviewGuideVoteMessageEvent;
@@ -140,7 +142,9 @@ public class PacketManager {
         this.registerCrafting();
         this.registerCamera();
         this.registerGameCenter();
+        this.registerHotelTickets();
         this.registerBattleBall();
+        this.registerSnowStorm();
         this.registerRewardTrack();
         this.registerHabbicons();
         this.registerQuests();
@@ -186,9 +190,29 @@ public class PacketManager {
         this.registerHandler(Incoming.BattleBallStartEvent, BattleBallStartEvent.class);
         this.registerHandler(Incoming.BattleBallGameEvent, BattleBallGameEvent.class);
         this.registerHandler(Incoming.BattleBallRequestFullStatusEvent, BattleBallRequestFullStatusEvent.class);
-        this.registerHandler(Incoming.BattleBallBuyTicketsEvent, BattleBallBuyTicketsEvent.class);
         this.registerHandler(Incoming.BattleBallAddBotEvent, BattleBallAddBotEvent.class);
         this.registerHandler(Incoming.BattleBallRemoveBotEvent, BattleBallRemoveBotEvent.class);
+    }
+
+    private void registerHotelTickets() throws Exception {
+        this.registerHandler(Incoming.BuyTicketsEvent, BuyTicketsEvent.class);
+    }
+
+    private void registerSnowStorm() throws Exception {
+        this.registerHandler(Incoming.SnowStormGetLoungeEvent, SnowStormGetLoungeEvent.class);
+        this.registerHandler(Incoming.SnowStormSetGameParametersEvent, SnowStormSetGameParametersEvent.class);
+        this.registerHandler(Incoming.SnowStormDeleteEvent, SnowStormDeleteEvent.class);
+        this.registerHandler(Incoming.SnowStormInitiateJoinEvent, SnowStormInitiateJoinEvent.class);
+        this.registerHandler(Incoming.SnowStormSetJoinParametersEvent, SnowStormSetJoinParametersEvent.class);
+        this.registerHandler(Incoming.SnowStormLeaveEvent, SnowStormLeaveEvent.class);
+        this.registerHandler(Incoming.SnowStormKickEvent, SnowStormKickEvent.class);
+        this.registerHandler(Incoming.SnowStormWatchEvent, SnowStormWatchEvent.class);
+        this.registerHandler(Incoming.SnowStormStartEvent, SnowStormStartEvent.class);
+        this.registerHandler(Incoming.SnowStormGameEvent, SnowStormGameEvent.class);
+        this.registerHandler(Incoming.SnowStormRequestFullStatusEvent, SnowStormRequestFullStatusEvent.class);
+        this.registerHandler(Incoming.SnowStormRequestFinishedGameEvent, SnowStormRequestFinishedGameEvent.class);
+        this.registerHandler(Incoming.SnowStormAddBotEvent, SnowStormAddBotEvent.class);
+        this.registerHandler(Incoming.SnowStormRemoveBotEvent, SnowStormRemoveBotEvent.class);
     }
 
     public void registerCallable(Integer header, ICallable callable) {
@@ -518,7 +542,7 @@ public class PacketManager {
         this.registerHandler(Incoming.TryBusMessageEvent, TryBusMessageEvent.class);
         this.registerHandler(Incoming.ChangeWorldMessageEvent, ChangeWorldMessageEvent.class);
         this.registerHandler(Incoming.GameBoardMoveMessageEvent, GameBoardMoveMessageEvent.class);
-        this.registerHandler(Incoming.RequestGamehallLeaderboardMessageEvent, RequestGamehallLeaderboardMessageEvent.class);
+        this.registerHandler(Incoming.RequestLeaderboardMessageEvent, RequestLeaderboardMessageEvent.class);
         this.registerHandler(Incoming.RoomRequestBannedUsersEvent, RoomRequestBannedUsersEvent.class);
         this.registerHandler(Incoming.GetOfficialSongIdMessageEvent, GetOfficialSongIdMessageEvent.class);
         this.registerHandler(Incoming.GetSongInfoMessageEvent, GetSongInfoMessageEvent.class);

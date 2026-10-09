@@ -150,6 +150,8 @@ public class RoomCycleManager {
         // Process habbo queue
         processHabboQueue(foundRightHolder[0]);
 
+        if (loaded) com.eu.habbo.habbohotel.wired.variables.WiredInternalVariableObserver.observe(this.room);
+
         // Send scheduled composers
         processScheduledComposers();
     }

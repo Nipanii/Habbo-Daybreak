@@ -368,7 +368,7 @@ public class Outgoing {
     public final static int OpenGameBoardMessageComposer = 5220;
     public final static int GameBoardUpdateMessageComposer = 5221;
     public final static int CloseGameBoardMessageComposer = 5222;
-    public final static int OpenGamehallLeaderboardMessageComposer = 5224;
+    public final static int OpenLeaderboardMessageComposer = 5224;
     public final static int YouAreNotControllerMessageComposer = 2392; // PRODUCTION-201611291003-338511768
     public final static int GuildEditFailedMessageComposer = 3988; // PRODUCTION-201611291003-338511768
     public final static int MiniMailNewMessageMessageComposer = 1911; // PRODUCTION-201611291003-338511768
@@ -611,8 +611,28 @@ public class Outgoing {
     public static final int BattleBallSpectatorCountComposer = 7617;
     public static final int BattleBallIdleWarningComposer = 7619;
     public static final int BattleBallSkillLevelChangedComposer = 7620;
-    public static final int BattleBallTicketBalanceComposer = 7621;
-    public static final int BattleBallTicketPurchaseResultComposer = 7622;
+    /** Shared hotel-ticket messages used by classic ticketed public-room games. */
+    public static final int TicketBalanceComposer = 7621;
+    public static final int TicketPurchaseResultComposer = 7622;
+
+    // Original Shockwave r26 SnowStorm (v1); separate from the later AIR SnowWar family below.
+    public static final int ShockwaveSnowStormLoungeInfoComposer = 7800;
+    public static final int ShockwaveSnowStormInstanceListComposer = 7801;
+    public static final int ShockwaveSnowStormGameInstanceComposer = 7802;
+    public static final int ShockwaveSnowStormInstanceRemovedComposer = 7803;
+    public static final int ShockwaveSnowStormJoinParametersComposer = 7804;
+    public static final int ShockwaveSnowStormOperationFailedComposer = 7805;
+    public static final int ShockwaveSnowStormGameLocationComposer = 7806;
+    public static final int ShockwaveSnowStormGameResetComposer = 7807;
+    public static final int ShockwaveSnowStormGameStartComposer = 7808;
+    public static final int ShockwaveSnowStormFullGameStatusComposer = 7809;
+    public static final int ShockwaveSnowStormGameStatusComposer = 7810;
+    public static final int ShockwaveSnowStormGameEndComposer = 7811;
+    public static final int ShockwaveSnowStormPlayerRemovedComposer = 7812;
+    public static final int ShockwaveSnowStormSpectatorCountComposer = 7813;
+    public static final int ShockwaveSnowStormFinishedGameComposer = 7814;
+    public static final int ShockwaveSnowStormSkillLevelChangedComposer = 7815;
+    public static final int ShockwaveSnowStormIdleWarningComposer = 7816;
 
 
     public static final int SnowStormGameStartedComposer = 5000;

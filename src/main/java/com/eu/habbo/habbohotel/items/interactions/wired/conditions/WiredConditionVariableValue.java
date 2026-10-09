@@ -61,11 +61,11 @@ public final class WiredConditionVariableValue extends WiredConditionVariableBas
         }
         String requestedTargetId = settings.getVariableIds()[0];
         String requestedReferenceId = settings.getVariableIds()[1];
-        if (!validateDefinition(room, requestedTargetId, params[0])) {
+        if (!validateNumericDefinition(room, requestedTargetId, params[0])) {
             return false;
         }
         if (params[2] == REFERENCE_VARIABLE
-                && !validateDefinition(room, requestedReferenceId, params[5])) {
+                && !validateNumericDefinition(room, requestedReferenceId, params[5])) {
             return false;
         }
         if (params[2] == REFERENCE_LITERAL) {
@@ -83,7 +83,10 @@ public final class WiredConditionVariableValue extends WiredConditionVariableBas
 
     @Override
     public boolean evaluate(WiredContext context) {
-        if (!WiredFeatureCapabilityGuard.isRuntimeReady(this)) {
+        if (context == null || !WiredFeatureCapabilityGuard.isRuntimeReady(this)
+                || !hasNumericValue(context.room(), this.targetVariableId, this.targetScope)
+                || this.referenceMode == REFERENCE_VARIABLE
+                && !hasNumericValue(context.room(), this.referenceVariableId, this.referenceScope)) {
             return false;
         }
         WiredVariableValue target = resolveSingleValue(context, this.targetVariableId, this.targetScope, 0);

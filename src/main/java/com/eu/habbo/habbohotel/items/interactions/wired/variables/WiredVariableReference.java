@@ -24,7 +24,7 @@ import java.util.List;
 
 /** July code 4 ({@code wf_var_reference}): a configured cross-room alias. */
 public final class WiredVariableReference extends InteractionWiredVariable {
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
     private static final int MAX_SHARED = 16_384;
 
     private String name = "";
@@ -80,7 +80,7 @@ public final class WiredVariableReference extends InteractionWiredVariable {
 
         WiredCrossRoomAliasRepository.Entry stored =
                 WiredCrossRoomAliasRepository.instance().loadByItem(getId());
-        if (stored != null && stored.type() == WiredVariableType.REFERENCE) {
+        if (stored != null && stored.type() == WiredVariableType.REFERENCE && stored.version() >= VERSION) {
             this.name = stored.name();
             this.sourceId = stored.sourceVariableId();
             this.readOnly = stored.readOnly();
@@ -96,7 +96,7 @@ public final class WiredVariableReference extends InteractionWiredVariable {
         }
         String normalizedName = data == null ? null : WiredVariableName.normalize(data.name);
         if (data != null
-                && data.version == VERSION
+                && (data.version == VERSION || data.version == 1)
                 && data.type == WiredVariableType.REFERENCE.code
                 && WiredVariableName.isValid(normalizedName)
                 && isValidVariableId(data.sourceId)
@@ -104,6 +104,14 @@ public final class WiredVariableReference extends InteractionWiredVariable {
             this.name = normalizedName;
             this.sourceId = data.sourceId;
             this.readOnly = data.readOnly;
+            return;
+        }
+        if (stored != null && stored.type() == WiredVariableType.REFERENCE) {
+            // A flattened legacy edge cannot prove its original permission
+            // chain if the item payload has also been lost. Keep reads only.
+            this.name = stored.name();
+            this.sourceId = stored.sourceVariableId();
+            this.readOnly = true;
         }
     }
 
@@ -229,7 +237,8 @@ public final class WiredVariableReference extends InteractionWiredVariable {
             }
         }
 
-        message.appendInt(1);
+        message.appendInt(2);
+        serializeVariableCatalogContext(message, room);
         message.appendInt(WiredVariableType.REFERENCE.code);
         message.appendInt(shared.size());
         for (Shared entry : shared) {
@@ -279,6 +288,20 @@ public final class WiredVariableReference extends InteractionWiredVariable {
             return false;
         }
 
+        // Preserve the selected edge, not just its resolved terminal. Flattening
+        // a Reference chain would discard upstream read-only policy on reload.
+        Room selectedRoom = null;
+        for (Room candidate : environment.getRoomManager().getActiveRooms()) {
+            var manager = candidate.getRoomSpecialTypes().getWiredVariableManager();
+            var definition = manager == null || !manager.isOperational()
+                    ? null : manager.runtimeDefinition(this.sourceId);
+            if (definition == null || definition.availabilityCode()
+                    != WiredVariableAvailability.SHARED_PERMANENT.code) continue;
+            if (selectedRoom != null) return false;
+            selectedRoom = candidate;
+        }
+        if (selectedRoom == null || selectedRoom == room) return false;
+
         return WiredCrossRoomAliasRepository.instance().upsert(
                 new WiredCrossRoomAliasRepository.Entry(
                         getId(),
@@ -291,8 +314,8 @@ public final class WiredVariableReference extends InteractionWiredVariable {
                         source.definition().hasValue(),
                         VERSION,
                         0,
-                        source.room().getId(),
-                        source.variableId(),
+                        selectedRoom.getId(),
+                        this.sourceId,
                         this.readOnly,
                         System.currentTimeMillis()));
     }

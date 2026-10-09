@@ -65,7 +65,9 @@ class WiredSelectorRemoteWireTest {
             assertEquals(100, packet.readInt());
             assertEquals(0, packet.readInt()); // default user sources
             assertFalse(packet.readBoolean()); // allow wall furni
-            assertEquals(0, packet.readInt()); // WiredContext blocks
+            assertEquals(1, packet.readInt()); // WiredContext blocks
+            assertEquals(0, packet.readInt()); // catalog block
+            assertEquals(0, packet.readInt()); // unavailable catalog hash
             assertEquals(0, packet.readInt()); // default int params
             assertEquals(0, packet.readableBytes());
         } finally {

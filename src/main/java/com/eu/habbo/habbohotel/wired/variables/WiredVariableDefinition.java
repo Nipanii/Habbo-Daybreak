@@ -75,6 +75,15 @@ public final class WiredVariableDefinition {
         return this.roomId;
     }
 
+    /** Non-persisted source descriptor; its opaque ID need not identify furniture. */
+    public static WiredVariableDefinition runtimeView(int roomId, String variableId,
+            WiredVariableType type, String name, int availability, boolean hasValue) {
+        if (roomId <= 0 || variableId == null || variableId.isBlank())
+            throw new IllegalArgumentException("invalid runtime source");
+        return new WiredVariableDefinition(roomId, 0, variableId, type, name,
+                availability, hasValue, false);
+    }
+
     public int definitionItemId() {
         return this.definitionItemId;
     }

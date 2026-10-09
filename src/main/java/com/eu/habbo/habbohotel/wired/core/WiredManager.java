@@ -320,11 +320,16 @@ public final class WiredManager {
                 && actor.isInRoom()
                 && room.getRoomUnits().contains(actor)
                 ? actor : null;
-        return handleEvent(WiredEvent.builder(WiredEvent.Type.VARIABLE_CHANGED, room)
-                .actor(currentActor)
-                .variableMutation(mutation)
+        boolean handled = false;
+        for (var notification : com.eu.habbo.habbohotel.wired.variables.WiredVariableAliasOperations.notificationsAcrossRooms(room, mutation)) {
+            com.eu.habbo.habbohotel.wired.variables.WiredInternalVariableObserver.record(notification.room(), notification.mutation());
+            handled |= handleEvent(WiredEvent.builder(WiredEvent.Type.VARIABLE_CHANGED, notification.room())
+                .actor(notification.room() == room ? currentActor : null)
+                .variableMutation(notification.mutation())
                 .triggeredByEffect(true)
                 .build());
+        }
+        return handled;
     }
 
     public static boolean triggerTransactionCompleted(

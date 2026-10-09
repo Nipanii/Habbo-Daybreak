@@ -216,7 +216,7 @@ public class WiredEffectMatchFurni extends InteractionWiredEffect implements Int
         return type;
     }
 
-    // Wired 2.0 getters (settings-backed items; resolve via room, fall back to raw item_id)
+    // Wired 2.0 getters (settings-backed items resolved against the current room)
     @Override
     protected java.util.Collection<HabboItem> getSelectedItems() {
         Room room = Emulator.getGameEnvironment().getRoomManager()
@@ -231,15 +231,23 @@ public class WiredEffectMatchFurni extends InteractionWiredEffect implements Int
     }
 
     @Override
-    protected int[] getSelectedItemVisibleIds() {
-        Room room = Emulator.getGameEnvironment().getRoomManager().getRoom(this.getRoomId());
-        int[] ids = new int[this.settings.size()];
-        int i = 0;
-        for (WiredMatchFurniSetting setting : this.settings) {
-            HabboItem item = room != null ? room.getHabboItemByDatabaseId(setting.item_id) : null;
-            ids[i++] = item != null ? item.getRoomVisibleId() : setting.item_id;
+    protected boolean sanitizeSelectedItems(Room room) {
+        return room != null && this.settings.removeIf(setting -> {
+            HabboItem item = setting == null ? null : room.getHabboItemByDatabaseId(setting.item_id);
+            return !isCurrentSelectedItem(room, item);
+        });
+    }
+
+    @Override
+    protected int[] getSelectedItemVisibleIds(Room room) {
+        if (room == null) {
+            return new int[0];
         }
-        return ids;
+        return this.settings.stream()
+                .map(setting -> setting == null ? null : room.getHabboItemByDatabaseId(setting.item_id))
+                .filter(item -> isCurrentSelectedItem(room, item))
+                .mapToInt(HabboItem::getRoomVisibleId)
+                .toArray();
     }
 
     @Override

@@ -47,6 +47,8 @@ public final class WiredTriggerVariableChanged extends InteractionWiredTrigger {
         return WiredTriggerType.VARIABLE_CHANGED;
     }
 
+    public String selectedVariableId() { return this.variableId; }
+
     @Override
     public boolean matches(HabboItem triggerItem, WiredEvent event) {
         if (!WiredFeatureCapabilityGuard.isRuntimeReady(this)
@@ -101,10 +103,8 @@ public final class WiredTriggerVariableChanged extends InteractionWiredTrigger {
                 || (params[3] & ~(MASK_INCREASED | MASK_DECREASED | MASK_UNCHANGED)) != 0) {
             return false;
         }
-        // A value-mask has meaning only when its parent selector is enabled.
-        if (params[1] == 0 && params[3] != 0) {
-            return false;
-        }
+        // July retains checked disabled direction boxes. They are irrelevant
+        // when value changed is off, rather than an invalid configuration.
         Room room = Emulator.getGameEnvironment().getRoomManager().getRoom(this.getRoomId());
         WiredInternalVariableRuntime.Definition internal =
                 room == null ? null
@@ -112,18 +112,16 @@ public final class WiredTriggerVariableChanged extends InteractionWiredTrigger {
                         .filter(definition -> definition.variableId().equals(requestedId))
                         .findFirst().orElse(null);
         if (internal != null) {
-            // Internal values already exist and cannot be deleted; July exposes
-            // value-change events for writable values and for the Projectile
-            // sub-variables explicitly labelled "Interceptable".
-            if ((!internal.writable() && !internal.runtimeObservable()) || params[0] != 0
-                    || params[1] != 1 || params[2] != 0) {
+            if (!internal.writable() && !internal.runtimeObservable()) {
                 return false;
             }
         } else {
             WiredVariableManager manager = room == null
                     ? null : room.getRoomSpecialTypes().getWiredVariableManager();
             if (manager == null || !manager.isOperational()
-                    || manager.runtimeDefinition(requestedId) == null) {
+                    || manager.runtimeDefinition(requestedId) == null
+                    || !com.eu.habbo.habbohotel.wired.variables.WiredVariableMetadata.fromDefinition(
+                            room, manager.runtimeDefinition(requestedId)).canInterceptChanges()) {
                 return false;
             }
         }
@@ -131,7 +129,7 @@ public final class WiredTriggerVariableChanged extends InteractionWiredTrigger {
         this.created = params[0] == 1;
         this.valueChanged = params[1] == 1;
         this.deleted = params[2] == 1;
-        this.valueChangeMask = params[3];
+        this.valueChangeMask = this.valueChanged ? params[3] : 0;
         return this.created || this.valueChanged || this.deleted;
     }
 
@@ -172,15 +170,14 @@ public final class WiredTriggerVariableChanged extends InteractionWiredTrigger {
                     || !isBooleanChar(fields[2].charAt(0))
                     || !isBooleanChar(fields[2].charAt(1))
                     || !isBooleanChar(fields[2].charAt(2))
-                    || (loadedMask & ~(MASK_INCREASED | MASK_DECREASED | MASK_UNCHANGED)) != 0
-                    || (fields[2].charAt(1) == '0' && loadedMask != 0)) {
+                    || (loadedMask & ~(MASK_INCREASED | MASK_DECREASED | MASK_UNCHANGED)) != 0) {
                 return;
             }
             this.variableId = loadedId;
             this.created = fields[2].charAt(0) == '1';
             this.valueChanged = fields[2].charAt(1) == '1';
             this.deleted = fields[2].charAt(2) == '1';
-            this.valueChangeMask = loadedMask;
+            this.valueChangeMask = this.valueChanged ? loadedMask : 0;
         } catch (IllegalArgumentException ignored) {
             this.onPickUp();
         }

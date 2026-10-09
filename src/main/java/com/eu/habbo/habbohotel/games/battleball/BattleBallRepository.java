@@ -1,7 +1,7 @@
 package com.eu.habbo.habbohotel.games.battleball;
 
 import com.eu.habbo.Emulator;
-import com.eu.habbo.habbohotel.games.gamehall.leaderboard.GamehallLeaderboardManager;
+import com.eu.habbo.habbohotel.leaderboards.LeaderboardManager;
 import com.eu.habbo.habbohotel.users.Habbo;
 import com.eu.habbo.plugin.events.users.UserPointsEvent;
 import java.sql.Connection;
@@ -28,11 +28,6 @@ final class BattleBallRepository {
         static ChargeResult rejected() { return failed(ChargeStatus.REJECTED); }
         static ChargeResult error() { return failed(ChargeStatus.ERROR); }
         private static ChargeResult failed(ChargeStatus status) { return new ChargeResult(status, Map.of(), Map.of()); }
-    }
-    record PurchaseResult(int status, int recipientUserId, String recipientName, int creditsRemaining,
-                          int ticketBalance, int ticketsAdded) {
-        static PurchaseResult failed(int status) { return new PurchaseResult(status, 0, "", -1, -1, 0); }
-        boolean success() { return this.status == 0; }
     }
     private record PersistResult(boolean persisted, BattleBallFinishedGame finished) {}
 
@@ -142,72 +137,6 @@ final class BattleBallRepository {
         } catch (SQLException exception) {
             LOGGER.error("BattleBall -> Could not open the ticket transaction for instance {}.", game.id(), exception);
             return ChargeResult.error();
-        }
-    }
-
-    /** Buys one of the two original Shockwave bundles in a single credits-to-tickets transaction. */
-    PurchaseResult purchaseTickets(int buyerUserId, String requestedRecipient, int currencyType,
-                                   int creditCost, int ticketsAdded) {
-        if (buyerUserId <= 0 || currencyType < 0 || creditCost <= 0 || ticketsAdded <= 0)
-            return PurchaseResult.failed(3);
-        try (Connection connection = Emulator.getDatabase().getDataSource().getConnection()) {
-            boolean previousAutoCommit = connection.getAutoCommit();
-            connection.setAutoCommit(false);
-            try {
-                int recipientUserId;
-                String recipientName;
-                if (requestedRecipient == null || requestedRecipient.isBlank()) {
-                    try (PreparedStatement recipient = connection.prepareStatement(
-                            "SELECT id, username FROM users WHERE id = ? LIMIT 1 FOR UPDATE")) {
-                        recipient.setInt(1, buyerUserId);
-                        try (ResultSet rows = recipient.executeQuery()) {
-                            if (!rows.next()) { connection.rollback(); return PurchaseResult.failed(2); }
-                            recipientUserId = rows.getInt("id"); recipientName = rows.getString("username");
-                        }
-                    }
-                } else {
-                    try (PreparedStatement recipient = connection.prepareStatement(
-                            "SELECT id, username FROM users WHERE username = ? LIMIT 1 FOR UPDATE")) {
-                        recipient.setString(1, requestedRecipient.trim());
-                        try (ResultSet rows = recipient.executeQuery()) {
-                            if (!rows.next()) { connection.rollback(); return PurchaseResult.failed(2); }
-                            recipientUserId = rows.getInt("id"); recipientName = rows.getString("username");
-                        }
-                    }
-                }
-
-                try (PreparedStatement debit = connection.prepareStatement(
-                        "UPDATE users SET credits = credits - ? WHERE id = ? AND credits >= ? LIMIT 1")) {
-                    debit.setInt(1, creditCost); debit.setInt(2, buyerUserId); debit.setInt(3, creditCost);
-                    if (debit.executeUpdate() != 1) { connection.rollback(); return PurchaseResult.failed(1); }
-                }
-                try (PreparedStatement credit = connection.prepareStatement(
-                        "INSERT INTO users_currency (user_id, type, amount) VALUES (?, ?, ?) "
-                                + "ON DUPLICATE KEY UPDATE amount = amount + VALUES(amount)")) {
-                    credit.setInt(1, recipientUserId); credit.setInt(2, currencyType); credit.setInt(3, ticketsAdded);
-                    credit.executeUpdate();
-                }
-                int creditsRemaining;
-                try (PreparedStatement balance = connection.prepareStatement("SELECT credits FROM users WHERE id = ? LIMIT 1")) {
-                    balance.setInt(1, buyerUserId);
-                    try (ResultSet rows = balance.executeQuery()) {
-                        if (!rows.next()) throw new SQLException("Buyer disappeared during BattleBall purchase");
-                        creditsRemaining = rows.getInt(1);
-                    }
-                }
-                int ticketBalance = readCurrency(connection, recipientUserId, currencyType);
-                connection.commit();
-                return new PurchaseResult(0, recipientUserId, recipientName, creditsRemaining, ticketBalance, ticketsAdded);
-            } catch (SQLException exception) {
-                connection.rollback();
-                LOGGER.error("BattleBall -> Ticket purchase failed for user {}.", buyerUserId, exception);
-                return PurchaseResult.failed(4);
-            } finally {
-                connection.setAutoCommit(previousAutoCommit);
-            }
-        } catch (SQLException exception) {
-            LOGGER.error("BattleBall -> Could not open ticket purchase transaction for user {}.", buyerUserId, exception);
-            return PurchaseResult.failed(4);
         }
     }
 
@@ -350,10 +279,10 @@ final class BattleBallRepository {
      * Runs after the commit: a leaderboard write failing must not roll back the round itself.
      */
     private void publishLeaderboard(BattleBallRoundResult round) {
-        GamehallLeaderboardManager leaderboard = Emulator.getGameEnvironment() == null
-                ? null : Emulator.getGameEnvironment().getGamehallLeaderboardManager();
+        LeaderboardManager leaderboard = Emulator.getGameEnvironment() == null
+                ? null : Emulator.getGameEnvironment().getLeaderboardManager();
         if (leaderboard == null) return;
-        List<GamehallLeaderboardManager.BattleBallResult> results = new ArrayList<>();
+        List<LeaderboardManager.BattleBallResult> results = new ArrayList<>();
         int best = round.teamScores().values().stream().mapToInt(Integer::intValue).max().orElse(0);
         for (BattleBallRoundResult.PlayerResult player : round.players()) {
             if (player.userId() < 1) continue;
@@ -365,7 +294,7 @@ final class BattleBallRepository {
                 // No single winner: everyone level with the best score drew, the rest lost.
                 outcome = teamScore == best ? 0 : -1;
             }
-            results.add(new GamehallLeaderboardManager.BattleBallResult(
+            results.add(new LeaderboardManager.BattleBallResult(
                     player.userId(), player.score(), outcome));
         }
         leaderboard.recordBattleBallResults(results);

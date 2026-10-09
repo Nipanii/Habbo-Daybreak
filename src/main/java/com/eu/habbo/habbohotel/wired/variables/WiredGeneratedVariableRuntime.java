@@ -47,7 +47,9 @@ public final class WiredGeneratedVariableRuntime {
         if (manager == null || !manager.isOperational()) return null;
         WiredVariableDefinition parent = manager.runtimeDefinition(parsed.parentId);
         if (parent == null || !parent.accepts(holder)) return null;
-        WiredVariableValue source = manager.get(parsed.parentId, holder);
+        var effectiveParent = WiredVariableAliasResolver.resolve(room, parsed.parentId);
+        if (effectiveParent == null || !effectiveParent.definition().hasValue()) return null;
+        WiredVariableValue source = WiredVariableAliasOperations.readValue(room, parsed.parentId, holder);
         if (source == null) return null;
         InteractionWiredVariable item =
                 room.getRoomSpecialTypes().getVariable(parent.definitionItemId());

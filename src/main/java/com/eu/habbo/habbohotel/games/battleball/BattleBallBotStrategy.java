@@ -13,7 +13,7 @@ final class BattleBallBotStrategy {
     void direct(BattleBallGame game, long now) {
         long decisionDelay = Emulator.getConfig() == null ? DEFAULT_DECISION_MS
                 : Math.max(TICK_MS, Emulator.getConfig().getInt(
-                        "battleball.bot.decision.milliseconds", (int) DEFAULT_DECISION_MS));
+                        "battleball.bots.decision.interval.ms", (int) DEFAULT_DECISION_MS));
         for (BattleBallPlayer bot : game.players()) {
             if (!bot.isBot()
                     || bot.state() == BattleBallPlayerState.STUNNED
@@ -37,7 +37,7 @@ final class BattleBallBotStrategy {
     BattleBallPosition chooseTarget(BattleBallGame game, BattleBallPlayer bot) {
         int radius = Emulator.getConfig() == null ? DEFAULT_SEARCH_RADIUS
                 : Math.max(1, Math.min(12, Emulator.getConfig().getInt(
-                        "battleball.bot.search.radius", DEFAULT_SEARCH_RADIUS)));
+                        "battleball.bots.search-radius.tiles", DEFAULT_SEARCH_RADIUS)));
         int radiusSquared = radius * radius;
 
         if (bot.heldPowerObjectId() < 0) {

@@ -222,12 +222,13 @@ public class RoomUnitManager {
             return;
         }
 
-        // User-variable values deliberately survive a leave/reconnect under
-        // their stable Habbo ID. This hook makes every normal departure pass
-        // through the manager's holder-lifecycle boundary.
+        // Clear availability-0 values before removing the actor, retaining
+        // permanent values and blocking recreation by deletion handlers.
         RoomSpecialTypes specialTypes = this.room.getRoomSpecialTypes();
         if (specialTypes != null && specialTypes.getWiredVariableManager() != null) {
-            specialTypes.getWiredVariableManager().onUserLeaves(habbo.getHabboInfo().getId());
+            specialTypes.getWiredVariableManager().onUserLeaves(habbo.getHabboInfo().getId(),
+                    mutation -> com.eu.habbo.habbohotel.wired.core.WiredManager.triggerVariableChanged(
+                            this.room, habbo.getRoomUnit(), mutation));
         }
 
         if (habbo.getRoomUnit() != null && habbo.getRoomUnit().getCurrentLocation() != null) {

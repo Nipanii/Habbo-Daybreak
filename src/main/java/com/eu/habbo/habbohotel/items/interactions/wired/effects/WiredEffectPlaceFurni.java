@@ -280,11 +280,12 @@ public class WiredEffectPlaceFurni extends WiredEffectConfigBase {
             return;
         }
         WiredVariableManager manager = context.room().getRoomSpecialTypes().getWiredVariableManager();
-        if (manager == null || !manager.isOperational()) {
+        WiredVariableDefinition spawn = spawnDefinition(context.room(), this.variableIds[0]);
+        if (manager == null || spawn == null) {
             return;
         }
 
-        Integer value = this.intParams[7] == 0
+        Integer value = !spawn.hasValue() ? 0 : this.intParams[7] == 0
                 ? this.intParams[8]
                 : resolveReferenceValue(context, manager);
         if (value == null) {
@@ -301,7 +302,7 @@ public class WiredEffectPlaceFurni extends WiredEffectConfigBase {
             return null;
         }
         if (this.intParams[9] == TARGET_CONTEXT) {
-            return context.contextVariables().get(variableId);
+            return WiredVariableAliasOperations.readContext(context, variableId);
         }
         WiredInternalVariableRuntime.Definition internal =
                 WiredInternalVariableRuntime.definition(variableId, this.intParams[9]);
@@ -362,29 +363,40 @@ public class WiredEffectPlaceFurni extends WiredEffectConfigBase {
         if (params[6] == 0) {
             return;
         }
-        WiredVariableManager manager = room.getRoomSpecialTypes().getWiredVariableManager();
-        WiredVariableDefinition spawn = definition(manager, ids[0]);
-        if (spawn == null || spawn.type() != WiredVariableType.FURNI || !spawn.hasValue()) {
+        WiredVariableDefinition spawn = spawnDefinition(room, ids[0]);
+        if (spawn == null) {
             throw new WiredSaveException("Choose a writable furniture variable");
         }
+        // The July form disables seed controls for valueless presence flags.
+        if (!spawn.hasValue()) return;
         if (params[7] == 1) {
-            if (params[9] == TARGET_CONTEXT) {
-                WiredVariableContext context = contextDefinition(room, ids[1]);
-                if (context == null || !context.hasValue()) {
-                    throw new WiredSaveException("Choose a readable context variable");
-                }
-            } else {
-                if (WiredInternalVariableRuntime.matches(ids[1], params[9])) {
-                    return;
-                }
-                WiredVariableDefinition reference = definition(manager, ids[1]);
-                if (reference == null || reference.holderScope() == null
-                        || reference.holderScope().code != targetScope(params[9])
-                        || !reference.hasValue()) {
-                    throw new WiredSaveException("Variable reference target does not match");
-                }
-            }
+            if (!readableReference(room, ids[1], params[9]))
+                throw new WiredSaveException("Variable reference target does not match");
         }
+    }
+
+    private WiredVariableDefinition spawnDefinition(Room room, String id) {
+        if (room == null || room.getRoomSpecialTypes() == null) return null;
+        WiredVariableManager manager = room.getRoomSpecialTypes().getWiredVariableManager();
+        WiredVariableDefinition spawn = definition(manager, id);
+        // July explicitly limits spawn destinations to category 0, excluding
+        // Reference/Echo views even when their terminal source is writable.
+        return spawn != null && spawn.type() == WiredVariableType.FURNI
+                && !WiredVariableAliasOperations.isAlias(room, id)
+                && WiredVariableAliasOperations.canCreateDelete(room, id) ? spawn : null;
+    }
+
+    private boolean readableReference(Room room, String id, int target) {
+        if (WiredInternalVariableRuntime.matches(id, target)) return true;
+        if (target == TARGET_CONTEXT) {
+            WiredVariableContext context = contextDefinition(room, id);
+            if (context != null) return context.hasValue();
+        }
+        var source = WiredVariableAliasOperations.resolve(room, id);
+        if (source == null || !source.definition().hasValue()) return false;
+        return target == TARGET_CONTEXT ? source.definition().type() == WiredVariableType.CONTEXT
+                : source.definition().holderScope() != null
+                && source.definition().holderScope().code == targetScope(target);
     }
 
     private WiredVariableContext contextDefinition(Room room, String id) {

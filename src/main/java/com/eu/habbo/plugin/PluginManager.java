@@ -95,6 +95,7 @@ public class PluginManager {
         MarketPlace.MARKETPLACE_ENABLED = Emulator.getConfig().getBoolean("hotel.marketplace.enabled");
         MarketPlace.MARKETPLACE_CURRENCY = Emulator.getConfig().getInt("hotel.marketplace.currency");
         Messenger.SAVE_PRIVATE_CHATS = Emulator.getConfig().getBoolean("save.private.chats", false);
+        Messenger.CHAT_DELAY_MILLIS = Emulator.getConfig().getInt("messenger.chat.delay.millis", 100);
         PacketManager.DEBUG_SHOW_PACKETS = Emulator.getConfig().getBoolean("debug.show.packets");
         PacketManager.MULTI_THREADED_PACKET_HANDLING = Emulator.getConfig()
                 .getBoolean("io.client.multithreaded.handler");

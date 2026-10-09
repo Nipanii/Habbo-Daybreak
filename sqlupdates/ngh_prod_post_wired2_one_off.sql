@@ -1317,16 +1317,45 @@ CREATE TABLE IF NOT EXISTS `battleball_player_stats` (
   PRIMARY KEY (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Tickets are shared by multiple classic public-room activities, not owned by BattleBall.
+-- Preserve an administrator's existing currency type while migrating the old key.
+INSERT INTO `emulator_settings` (`key`, `value`)
+SELECT 'hotel.ticket.currency.type', `value`
+FROM `emulator_settings`
+WHERE `key` = 'battleball.ticket.currency.type'
+ON DUPLICATE KEY UPDATE `value` = `value`;
+
+INSERT INTO `emulator_settings` (`key`, `value`) VALUES
+  ('hotel.ticket.currency.type', '106')
+ON DUPLICATE KEY UPDATE `value` = `value`;
+
+DELETE FROM `emulator_settings` WHERE `key` = 'battleball.ticket.currency.type';
+
+-- Migrate the early singular bot-setting names without losing administrator values.
+INSERT IGNORE INTO `emulator_settings` (`key`, `value`)
+SELECT 'battleball.bots.decision.interval.ms', `value` FROM `emulator_settings`
+WHERE `key` = 'battleball.bot.decision.milliseconds';
+INSERT IGNORE INTO `emulator_settings` (`key`, `value`)
+SELECT 'battleball.bots.search-radius.tiles', `value` FROM `emulator_settings`
+WHERE `key` = 'battleball.bot.search.radius';
+INSERT IGNORE INTO `emulator_settings` (`key`, `value`)
+SELECT 'battleball.bots.figures', `value` FROM `emulator_settings`
+WHERE `key` = 'battleball.bot.figures';
+DELETE FROM `emulator_settings` WHERE `key` IN (
+  'battleball.bot.decision.milliseconds',
+  'battleball.bot.search.radius',
+  'battleball.bot.figures'
+);
+
 INSERT INTO `emulator_settings` (`key`, `value`) VALUES
   ('battleball.enabled', '1'),
-  ('battleball.ticket.currency.type', '106'),
   ('battleball.ticket.cost', '2'),
   ('battleball.bots.enabled', '1'),
   ('battleball.bots.max-per-game', '8'),
   ('battleball.ranked.requires.human.opponent', '1'),
-  ('battleball.bot.decision.milliseconds', '1500'),
-  ('battleball.bot.search.radius', '8'),
-  ('battleball.bot.figures', 'hr-100.hd-190-7.ch-210-66.lg-270-82.sh-290-80,hr-100-61.hd-190-1.ch-210-92.lg-270-82.sh-290-80,hr-115-42.hd-195-19.ch-3030-82.lg-275-1408.fa-1201.ca-1804-64,ch-665-92.hd-629-1.sh-740-92.hr-515-31.lg-3174-71-92.he-3082-92'),
+  ('battleball.bots.decision.interval.ms', '1500'),
+  ('battleball.bots.search-radius.tiles', '8'),
+  ('battleball.bots.figures', 'hr-100.hd-190-7.ch-210-66.lg-270-82.sh-290-80,hr-100-61.hd-190-1.ch-210-92.lg-270-82.sh-290-80,hr-115-42.hd-195-19.ch-3030-82.lg-275-1408.fa-1201.ca-1804-64,ch-665-92.hd-629-1.sh-740-92.hr-515-31.lg-3174-71-92.he-3082-92'),
   ('battleball.max.instances', '100'),
   ('battleball.max.spectators', '50'),
   ('battleball.idle.timeout.seconds', '60'),

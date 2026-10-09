@@ -76,6 +76,7 @@ public final class WiredVariableManager implements AutoCloseable {
     private boolean operational;
     private boolean closed;
     private boolean roomStateDeleted;
+    private final java.util.Set<Integer> departingUsers = new java.util.HashSet<>();
 
     private WiredVariableManager(int roomId, Repository repository,
                                  BooleanSupplier runtimeReady, LongSupplier clock) {
@@ -294,8 +295,15 @@ public final class WiredVariableManager implements AutoCloseable {
             return MutationReceipt.of(MutationResult.UNAVAILABLE);
         }
         WiredVariableDefinition definition = this.definitions.get(variableId);
-        if (definition == null || !definition.accepts(holder)) {
+        if (definition == null || !definition.accepts(holder)
+                || WiredQuestVariableRuntime.isQuestBacked(definition)
+                || additive && !definition.hasValue()) {
             return MutationReceipt.of(MutationResult.INVALID);
+        }
+        if (holder.scope() == WiredVariableHolder.Scope.USER
+                && definition.availabilityCode() == 0
+                && this.departingUsers.contains(holder.stableId())) {
+            return MutationReceipt.of(MutationResult.UNAVAILABLE);
         }
         WiredVariableValue current = value(variableId, holder);
         long currentValue = current == null ? 0L : current.value();
@@ -305,6 +313,7 @@ public final class WiredVariableManager implements AutoCloseable {
         } catch (ArithmeticException exception) {
             return MutationReceipt.of(MutationResult.OVERFLOW);
         }
+        if (!definition.hasValue()) candidate = 0L;
         if (candidate < Integer.MIN_VALUE || candidate > Integer.MAX_VALUE) {
             return MutationReceipt.of(MutationResult.OVERFLOW);
         }
@@ -362,7 +371,8 @@ public final class WiredVariableManager implements AutoCloseable {
             return MutationReceipt.of(MutationResult.UNAVAILABLE);
         }
         WiredVariableDefinition definition = this.definitions.get(variableId);
-        if (definition == null || !definition.accepts(holder)) {
+        if (definition == null || !definition.accepts(holder)
+                || WiredQuestVariableRuntime.isQuestBacked(definition)) {
             return MutationReceipt.of(MutationResult.INVALID);
         }
         WiredVariableValue current = value(variableId, holder);
@@ -412,21 +422,45 @@ public final class WiredVariableManager implements AutoCloseable {
         return variableIds.size();
     }
 
-    /**
-     * Ordinary user leave intentionally retains values by stable Habbo ID.
-     *
-     * <p>The AIR client has a distinct room-active availability for user
-     * variables, but static client evidence does not establish whether it is
-     * cleared on an individual leave.  Keeping the value preserves a
-     * reconnect in the same loaded room and avoids silently deleting permanent
-     * values.  The room unload boundary clears all non-persisted values during
-     * hydration; persistent values are reloaded by their stable holder ID.</p>
-     */
-    public synchronized void onUserLeaves(int habboId) {
-        if (this.closed || habboId <= 0) {
-            return;
+    /** Clear room-presence user values; permanent values retain stable holder IDs. */
+    public void onUserLeaves(int habboId) {
+        onUserLeaves(habboId, null);
+    }
+
+    public void onUserLeaves(int habboId, Consumer<WiredVariableMutation> dispatcher) {
+        List<WiredVariableMutation> mutations = new java.util.ArrayList<>();
+        synchronized (this) {
+            if (this.closed || !this.operational || habboId <= 0
+                    || !this.departingUsers.add(habboId)) return;
+            WiredVariableHolder holder = WiredVariableHolder.user(habboId);
+            List<WiredVariableDefinition> temporary = this.definitions.values().stream()
+                    .filter(definition -> definition.type()
+                            == com.eu.habbo.habbohotel.wired.WiredVariableType.USER
+                            && definition.availabilityCode() == 0
+                            && value(definition.variableId(), holder) != null)
+                    .sorted(Comparator.comparing(WiredVariableDefinition::variableId)).toList();
+            if (!temporary.isEmpty()) {
+                long next = nextRevision();
+                if (!commit(next, PersistenceMutation.revisionOnly())) {
+                    this.departingUsers.remove(habboId);
+                    return;
+                }
+                for (WiredVariableDefinition definition : temporary) {
+                    WiredVariableValue removed = removeValueInternal(definition.variableId(), holder);
+                    mutations.add(new WiredVariableMutation(definition.variableId(), holder,
+                            removed.value(), null, WiredVariableMutation.Kind.DELETED, next,
+                            definition.definitionItemId(), WiredVariableMutation.CHANGE_ORIGIN_IN_ROOM));
+                }
+                this.revision = next;
+            }
         }
-        // Deliberately no mutation: Holder lifetime is not the live RoomUnit.
+        try {
+            // Keep the departure guard active while handlers run, outside the
+            // manager monitor, so a deletion handler cannot recreate this value.
+            if (dispatcher != null) mutations.forEach(dispatcher);
+        } finally {
+            synchronized (this) { this.departingUsers.remove(habboId); }
+        }
     }
 
     public synchronized WiredVariableValue get(String variableId, WiredVariableHolder holder) {

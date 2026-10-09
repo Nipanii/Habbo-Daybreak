@@ -22,6 +22,7 @@ import com.eu.habbo.habbohotel.wired.variables.WiredVariableMetadata;
 import com.eu.habbo.habbohotel.wired.variables.WiredVariableValue;
 import com.eu.habbo.habbohotel.wired.variables.WiredVariableMutation;
 import com.eu.habbo.habbohotel.wired.variables.WiredInternalVariableRuntime;
+import com.eu.habbo.habbohotel.wired.variables.WiredVariableAliasOperations;
 import com.eu.habbo.messages.MalformedPacketException;
 import com.eu.habbo.messages.ServerMessage;
 import com.eu.habbo.messages.incoming.Incoming;
@@ -275,7 +276,7 @@ public final class WiredMenuMessageEvent extends MessageHandler {
         if (variable == null) {
             return;
         }
-        List<WiredVariableValue> visibleValues = variable.values().stream()
+        List<WiredVariableValue> visibleValues = authoritativeValues(context, variableId, variable).stream()
                 .filter(value -> value.holder().scope()
                         == WiredVariableHolder.Scope.ROOM
                         || visibleHolderId(context, value.holder()) != 0)
@@ -290,6 +291,34 @@ public final class WiredMenuMessageEvent extends MessageHandler {
                 response.appendInt(value.value());
             }
         });
+    }
+
+    private List<WiredVariableValue> authoritativeValues(Context context, String id,
+            WiredVariableManager.VariableSnapshot variable) {
+        var source = WiredVariableAliasOperations.resolve(context.room, id);
+        if (source == null) return List.of();
+        var candidates = new java.util.LinkedHashSet<WiredVariableHolder>();
+        var stored = source.manager().variableSnapshot(source.variableId());
+        if (stored != null) stored.values().forEach(value -> candidates.add(value.holder()));
+        else {
+            var parent = com.eu.habbo.habbohotel.wired.variables.WiredGeneratedVariableRuntime.parentDefinition(
+                    WiredVariableAliasOperations.sourceRoom(source), source.variableId());
+            var parentValues = parent == null ? null : source.manager().variableSnapshot(parent.variableId());
+            if (parentValues != null) parentValues.values().forEach(value -> candidates.add(value.holder()));
+            else if (variable.definition().type() == WiredVariableType.ROOM) candidates.add(WiredVariableHolder.room());
+            else if (variable.definition().type() == WiredVariableType.FURNI) {
+                for (var item : context.room.getFloorItems()) candidates.add(WiredVariableHolder.furni(item.getId()));
+                for (var item : context.room.getWallItems()) candidates.add(WiredVariableHolder.furni(item.getId()));
+            } else if (variable.definition().type() == WiredVariableType.USER)
+                context.room.getCurrentHabbos().values().forEach(habbo ->
+                        candidates.add(WiredVariableHolder.user(habbo.getHabboInfo().getId())));
+        }
+        var result = new ArrayList<WiredVariableValue>();
+        for (var holder : candidates) {
+            var value = WiredVariableAliasOperations.readValue(context.room, id, holder);
+            if (value != null) result.add(value);
+        }
+        return result;
     }
 
     private void internalHolders(
@@ -376,9 +405,14 @@ public final class WiredMenuMessageEvent extends MessageHandler {
                 : target == null ? null : target.holder();
         WiredInternalVariableRuntime.Definition internal =
                 WiredInternalVariableRuntime.definition(variableId, type);
+        if (internal == null) {
+            var alias = WiredVariableAliasOperations.resolve(context.room, variableId);
+            if (alias != null && !alias.readOnly()) internal =
+                    WiredInternalVariableRuntime.definition(alias.variableId(), type);
+        }
         boolean internalSuccess = context.write && !permanent && target != null
                 && internal != null && operation == 0
-                && writeInternal(context, target, internal, value);
+                && writeInternal(context, target, internal, variableId, value);
         WiredVariableManager.MutationResult result =
                 internal == null && context.write && holder != null
                         ? mutate(context, holder, variableId, value, operation, permanent)
@@ -396,7 +430,7 @@ public final class WiredMenuMessageEvent extends MessageHandler {
 
     private boolean writeInternal(
             Context context, InspectionTarget target,
-            WiredInternalVariableRuntime.Definition definition, int value) {
+            WiredInternalVariableRuntime.Definition definition, String exposedId, int value) {
         if (!definition.writable()) {
             return false;
         }
@@ -408,9 +442,6 @@ public final class WiredMenuMessageEvent extends MessageHandler {
                         context.room, target.unit()).get(definition.name())
                 : WiredInternalVariableRuntime.globalValues(
                         context.room).get(definition.name());
-        if (before == null) {
-            return false;
-        }
         WiredVariableHolder eventHolder = target.holder();
         if (eventHolder == null && target.unit() != null) {
             eventHolder = WiredVariableHolder.user(target.unit().getId());
@@ -425,15 +456,20 @@ public final class WiredMenuMessageEvent extends MessageHandler {
                     && WiredInternalVariableRuntime.writeUnit(
                             context.room, target.unit(), definition.name(), value);
         }
-        if (written && before != value && eventHolder != null) {
-            WiredManager.triggerVariableChanged(
-                    context.room, this.client.getHabbo().getRoomUnit(),
-                    new WiredVariableMutation(
-                            definition.variableId(), eventHolder, before, value,
-                            WiredVariableMutation.Kind.VALUE_CHANGED,
-                            Math.max(1L, System.currentTimeMillis()),
-                            0,
-                            WiredVariableMutation.CHANGE_ORIGIN_CREATOR_TOOL));
+        if (written && eventHolder != null) {
+            Integer after = target.item() != null
+                    ? WiredInternalVariableRuntime.furniValues(context.room, target.item()).get(definition.name())
+                    : target.unit() != null ? WiredInternalVariableRuntime.unitValues(context.room, target.unit()).get(definition.name())
+                    : WiredInternalVariableRuntime.globalValues(context.room).get(definition.name());
+            var mutation = com.eu.habbo.habbohotel.wired.variables.WiredInternalVariableObserver.transition(
+                    definition.variableId(), eventHolder, before, after, 0,
+                    WiredVariableMutation.CHANGE_ORIGIN_CREATOR_TOOL);
+            if (mutation != null) {
+                com.eu.habbo.habbohotel.wired.variables.WiredInternalVariableObserver.record(context.room, mutation);
+                WiredManager.triggerVariableChanged(context.room, this.client.getHabbo().getRoomUnit(),
+                        new WiredVariableMutation(exposedId, eventHolder, before, after,
+                                mutation.kind(), mutation.revision(), 0, mutation.changeOrigin()));
+            }
         }
         return written;
     }
@@ -441,38 +477,10 @@ public final class WiredMenuMessageEvent extends MessageHandler {
     private WiredVariableManager.MutationResult mutate(
             Context context, WiredVariableHolder holder,
             String variableId, int value, int operation, boolean permanentOnly) {
-        WiredVariableManager manager =
-                context.room.getRoomSpecialTypes().getWiredVariableManager();
-        if (manager == null || operation < 0 || operation > 2) {
-            return WiredVariableManager.MutationResult.INVALID;
-        }
-        WiredVariableDefinition definition = manager.definition(variableId);
-        if (definition == null || !definition.accepts(holder)
-                || !definition.hasValue()
-                || (permanentOnly && !definition.persistsValues())
-                || definition.type() == com.eu.habbo.habbohotel.wired.WiredVariableType.QUEST
-                || definition.type() == com.eu.habbo.habbohotel.wired.WiredVariableType.QUEST_CHAIN) {
-            return WiredVariableManager.MutationResult.INVALID;
-        }
-        WiredVariableValue current = manager.get(variableId, holder);
-        java.util.function.Consumer<com.eu.habbo.habbohotel.wired.variables.WiredVariableMutation>
-                dispatcher = mutation -> WiredManager.triggerVariableChanged(
-                context.room, this.client.getHabbo().getRoomUnit(),
-                mutation.withProvenance(
-                        mutation.boxId(),
-                        WiredVariableMutation.CHANGE_ORIGIN_CREATOR_TOOL));
-        return switch (operation) {
-            case 0 -> current == null
-                    ? WiredVariableManager.MutationResult.INVALID
-                    : manager.setAndDispatch(variableId, holder, value, dispatcher);
-            case 1 -> current != null
-                    ? WiredVariableManager.MutationResult.INVALID
-                    : manager.setIfAbsentAndDispatch(variableId, holder, value, dispatcher);
-            case 2 -> current == null
-                    ? WiredVariableManager.MutationResult.INVALID
-                    : manager.removeValueAndDispatch(variableId, holder, dispatcher);
-            default -> WiredVariableManager.MutationResult.INVALID;
-        };
+        return com.eu.habbo.habbohotel.wired.variables.WiredVariableMenuMutation.apply(
+                context.room, holder, variableId, value, operation, permanentOnly,
+                mutation -> WiredManager.triggerVariableChanged(
+                        context.room, this.client.getHabbo().getRoomUnit(), mutation));
     }
 
     private boolean mutationSucceeded(WiredVariableManager.MutationResult result) {
@@ -648,7 +656,9 @@ public final class WiredMenuMessageEvent extends MessageHandler {
     private WiredVariableManager.VariableSnapshot variable(Context context, String id) {
         WiredVariableManager manager =
                 context.room.getRoomSpecialTypes().getWiredVariableManager();
-        return manager == null ? null : manager.publicSnapshot().variables().get(id);
+        var value = manager == null ? null : manager.publicSnapshot().variables().get(id);
+        return value != null && !WiredVariableMetadata.fromDefinition(context.room, value.definition()).invisible()
+                ? value : null;
     }
 
     private List<Value> values(Context context, WiredVariableHolder holder) {
@@ -665,15 +675,14 @@ public final class WiredMenuMessageEvent extends MessageHandler {
         List<Value> result = new ArrayList<>();
         for (WiredVariableManager.VariableSnapshot variable :
                 manager.publicSnapshot().variables().values()) {
+            if (WiredVariableMetadata.fromDefinition(context.room, variable.definition()).invisible()) continue;
             if (permanentOnly && !variable.definition().persistsValues()) {
                 continue;
             }
-            for (WiredVariableValue value : variable.values()) {
-                if (value.holder().equals(holder)) {
-                    result.add(new Value(variable.definition().variableId(), value.value(),
-                            value.createdAtMs(), value.updatedAtMs()));
-                }
-            }
+            var value = WiredVariableAliasOperations.readValue(context.room,
+                    variable.definition().variableId(), holder);
+            if (value != null) result.add(new Value(variable.definition().variableId(), value.value(),
+                    value.createdAtMs(), value.updatedAtMs()));
         }
         result.sort(Comparator.comparing(Value::variableId));
         return List.copyOf(result);

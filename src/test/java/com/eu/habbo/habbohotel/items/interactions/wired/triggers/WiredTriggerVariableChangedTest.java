@@ -80,6 +80,21 @@ class WiredTriggerVariableChangedTest {
         assertNotNull(loaded.getWiredData());
     }
 
+    @Test
+    void retainedDisabledDirectionMaskIsNormalizedOnReload() throws Exception {
+        var saved = new WiredTriggerVariableChanged(1, 1, null, "0", 0, 0);
+        set(saved, "variableId", "internal:1:@handitem");
+        set(saved, "created", true);
+        set(saved, "deleted", true);
+        set(saved, "valueChangeMask", 7);
+        String persisted = saved.getWiredData();
+        var row = (ResultSet) Proxy.newProxyInstance(getClass().getClassLoader(), new Class[] {ResultSet.class},
+                (proxy, method, arguments) -> method.getName().equals("getString") ? persisted : null);
+        var loaded = new WiredTriggerVariableChanged(2, 1, null, "0", 0, 0);
+        loaded.loadWiredData(row, null);
+        assertArrayEquals(new int[] {1, 0, 1, 0}, loaded.getWiredIntParams());
+    }
+
     private static WiredVariableMutation change(int before, int after) {
         return new WiredVariableMutation("room:42", WiredVariableHolder.room(), before, after,
                 WiredVariableMutation.Kind.VALUE_CHANGED, 3);

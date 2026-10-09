@@ -8,6 +8,7 @@ import com.eu.habbo.habbohotel.wired.WiredVariableType;
 import com.eu.habbo.habbohotel.wired.core.WiredCapabilityService;
 import com.eu.habbo.habbohotel.wired.menu.WiredMenuSettings;
 import com.eu.habbo.habbohotel.wired.variables.WiredVariableManager;
+import com.eu.habbo.habbohotel.wired.variables.WiredVariableCatalog;
 
 /** Shared fail-closed room/capability/view boundary for variable catalog requests. */
 final class WiredVariableCatalogRequestSupport {
@@ -43,14 +44,11 @@ final class WiredVariableCatalogRequestSupport {
         if (context == null || context.manager() == null || !context.canView()) {
             return null;
         }
-        return context.manager().snapshot(definition -> !definition.invisible()
-                && isRoomVisibleStoredDefinition(definition.type()));
+        return WiredVariableCatalog.visibleSnapshot(context.manager());
     }
 
     static boolean isRoomVisibleStoredDefinition(WiredVariableType type) {
-        return type == WiredVariableType.FURNI
-                || type == WiredVariableType.USER
-                || type == WiredVariableType.ROOM;
+        return WiredVariableCatalog.isRoomVisibleStoredDefinition(type);
     }
 
     record RequestContext(Room room, WiredVariableManager manager, boolean canView) {

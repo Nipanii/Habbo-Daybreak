@@ -4,6 +4,7 @@ import com.eu.habbo.Emulator;
 import com.eu.habbo.habbohotel.items.Item;
 import com.eu.habbo.habbohotel.items.interactions.InteractionWiredAddon;
 import com.eu.habbo.habbohotel.items.interactions.wired.WiredSettingsV2;
+import com.eu.habbo.habbohotel.items.interactions.wired.variables.WiredVariableContext;
 import com.eu.habbo.habbohotel.rooms.Room;
 import com.eu.habbo.habbohotel.wired.WiredAddonType;
 import com.eu.habbo.habbohotel.wired.core.WiredContext;
@@ -38,7 +39,7 @@ public final class WiredAddonVariableCapturer extends InteractionWiredAddon {
                 || settings.getDelay() != 0 || !WiredAddonVariablePlaceholder.validName(settings.getStringParam())) return false;
         Room room = Emulator.getGameEnvironment().getRoomManager().getRoom(getRoomId());
         String requestedVariable = settings.getVariableIds()[0];
-        if (!WiredAddonVariablePlaceholder.definitionMatches(room, requestedVariable, -20)
+        if (!isWritableCaptureTarget(room, requestedVariable)
                 || (settings.getIntParams()[0] == 1
                 && WiredAddonVariablePlaceholder.converter(room, requestedVariable) == null)) return false;
         this.name = settings.getStringParam(); this.variableId = requestedVariable;
@@ -55,7 +56,8 @@ public final class WiredAddonVariableCapturer extends InteractionWiredAddon {
 
     /** Match type is the July User Says setting: 0 contains, 1 exact, 2 any text. */
     public boolean capture(WiredContext context, String pattern, String input, int matchType) {
-        if (context == null || pattern == null || input == null || !appliesTo(pattern)) return false;
+        if (context == null || pattern == null || input == null || !appliesTo(pattern)
+                || !isWritableCaptureTarget(context.room(), this.variableId)) return false;
         String token = "#(" + this.name + ")";
         int at = pattern.indexOf(token);
         String prefix = pattern.substring(0, at);
@@ -87,7 +89,7 @@ public final class WiredAddonVariableCapturer extends InteractionWiredAddon {
             Data data = WiredManager.getGson().fromJson(set == null ? null : set.getString("wired_data"), Data.class);
             if (data != null && data.version == VERSION
                     && WiredAddonVariablePlaceholder.validName(data.name)
-                    && WiredAddonVariablePlaceholder.definitionMatches(room, data.variableId, -20)
+                    && isWritableCaptureTarget(room, data.variableId)
                     && (!data.textMode || WiredAddonVariablePlaceholder.converter(room, data.variableId) != null)) {
                 this.name=data.name; this.variableId=data.variableId; this.textMode=data.textMode;
             }
@@ -98,6 +100,18 @@ public final class WiredAddonVariableCapturer extends InteractionWiredAddon {
     @Override protected String getWiredStringParam() { return this.name; }
     @Override protected String[] getWiredVariableIds() { return this.variableId.isEmpty() ? new String[0] : new String[] {this.variableId}; }
     @Override protected int getMaxFurniSelection() { return 0; }
+
+    /** Capturer needs numeric, creatable, writable execution-local storage. */
+    static boolean isWritableCaptureTarget(Room room, String id) {
+        if (room == null || room.getRoomSpecialTypes() == null || id == null || !id.startsWith("room:")) return false;
+        try {
+            // Context internals and Echo views are read-only. Never create a
+            // shadow value under their exposed ID, including from old saves.
+            return room.getRoomSpecialTypes().getVariable(Integer.parseInt(id.substring(5)))
+                    instanceof WiredVariableContext context && context.hasValue()
+                    && com.eu.habbo.habbohotel.wired.variables.WiredVariableName.isValid(context.variableName());
+        } catch (NumberFormatException ignored) { return false; }
+    }
 
     private static final class Data {
         int version; String name, variableId; boolean textMode;

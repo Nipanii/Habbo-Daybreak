@@ -8,6 +8,7 @@ import com.eu.habbo.habbohotel.items.interactions.wired.WiredSettingsV2;
 import com.eu.habbo.habbohotel.items.interactions.wired.WiredCategoryType;
 import com.eu.habbo.habbohotel.wired.core.WiredManager;
 import com.eu.habbo.habbohotel.wired.core.WiredContext;
+import com.eu.habbo.habbohotel.wired.variables.WiredVariableCatalog;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -457,12 +458,16 @@ public abstract class InteractionWired extends InteractionDefault {
      * Serialization Order"). Subclasses may append the July context blocks they
      * actually own; the safe default remains an empty context.
      */
-    public void serializeWiredDataV2(ServerMessage message, Room room) {
+    public final void serializeWiredDataV2(ServerMessage message, Room room) {
+        if (sanitizeSelectedItems(room)) {
+            this.needsUpdate(true);
+        }
+
         WiredCategoryType category = getWiredCategory();
 
         message.appendInt(getMaxFurniSelection());            // furniLimit
-        appendVisibleIds(message, getSelectedItemVisibleIds());  // stuffIds
-        appendVisibleIds(message, getSelectedItem2VisibleIds()); // stuffIds2
+        appendVisibleIds(message, getSelectedItemVisibleIds(room));  // stuffIds
+        appendVisibleIds(message, getSelectedItem2VisibleIds(room)); // stuffIds2
         message.appendInt(this.getBaseItem().getSpriteId());  // stuffTypeId
         message.appendInt(this.getRoomVisibleId());           // id
         message.appendString(getWiredStringParam());          // stringParam
@@ -496,23 +501,62 @@ public abstract class InteractionWired extends InteractionDefault {
 
     /** Writes the complete unframed July WiredContext section, including its block count. */
     protected void serializeWiredContext(ServerMessage message, Room room) {
-        message.appendInt(0);
+        message.appendInt(1);
+        serializeVariableCatalogContext(message, room);
     }
 
-    /** Room-visible ids of the primary furni selection. Custom classes (settings-
-     *  backed items with id fallback) override this directly. */
-    protected int[] getSelectedItemVisibleIds() { return toVisibleIds(getSelectedItems()); }
+    /** Block 0 is shared by all variable-using editors and their extra context blocks. */
+    protected final void serializeVariableCatalogContext(ServerMessage message, Room room) {
+        message.appendInt(0); // ALL_VARIABLES_IN_ROOM
+        message.appendInt(WiredVariableCatalog.forRoom(room).aggregateHash());
+    }
+
+    /**
+     * Removes selected furni that are no longer the current room-owned instances.
+     * Settings/id-backed implementations override this to prune their backing data.
+     */
+    protected boolean sanitizeSelectedItems(Room room) {
+        if (room == null) {
+            return false;
+        }
+        boolean changed = pruneInvalidSelectedItems(room, getSelectedItems());
+        changed |= pruneInvalidSelectedItems(room, getSelectedItems2());
+        return changed;
+    }
+
+    protected final boolean pruneInvalidSelectedItems(Room room, Collection<HabboItem> items) {
+        return items != null && !items.isEmpty()
+                && items.removeIf(item -> !isCurrentSelectedItem(room, item));
+    }
+
+    protected final boolean isCurrentSelectedItem(Room room, HabboItem item) {
+        return room != null
+                && item != null
+                && item.getRoomId() == room.getId()
+                && room.getHabboItemByDatabaseId(item.getId()) == item;
+    }
+
+    /** Room-visible ids of the primary furni selection. */
+    protected int[] getSelectedItemVisibleIds(Room room) {
+        return toVisibleIds(room, getSelectedItems());
+    }
 
     /** Room-visible ids of the secondary furni selection (stuffIds2). */
-    protected int[] getSelectedItem2VisibleIds() { return toVisibleIds(getSelectedItems2()); }
+    protected int[] getSelectedItem2VisibleIds(Room room) {
+        return toVisibleIds(room, getSelectedItems2());
+    }
 
-    private int[] toVisibleIds(Collection<HabboItem> items) {
-        int[] ids = new int[items.size()];
-        int i = 0;
-        for (HabboItem item : items) {
-            ids[i++] = item.getRoomVisibleId();
+    private int[] toVisibleIds(Room room, Collection<HabboItem> items) {
+        if (room == null || items == null || items.isEmpty()) {
+            return new int[0];
         }
-        return ids;
+        ArrayList<Integer> ids = new ArrayList<>(items.size());
+        for (HabboItem item : items) {
+            if (isCurrentSelectedItem(room, item)) {
+                ids.add(item.getRoomVisibleId());
+            }
+        }
+        return ids.stream().mapToInt(Integer::intValue).toArray();
     }
 
     private void appendVisibleIds(ServerMessage message, int[] ids) {
