@@ -370,6 +370,12 @@ public class MarketPlace {
         if (!isValidListingPrice(event.price))
             return false;
 
+        // The offer row is inserted in the constructor, which only logs an SQL error. Keep the
+        // item in the inventory unless the row exists, or it ends up owned by nobody and unlisted.
+        MarketPlaceOffer offer = new MarketPlaceOffer(event.item, event.price, client.getHabbo());
+        if (offer.getOfferId() <= 0)
+            return false;
+
         GetMarketplaceOffersMessageEvent.cachedResults.clear();
 
         client.sendResponse(new FurniListRemoveMessageComposer(event.item.getGiftAdjustedId()));
@@ -377,7 +383,6 @@ public class MarketPlace {
 
         event.item.setFromGift(false);
 
-        MarketPlaceOffer offer = new MarketPlaceOffer(event.item, event.price, client.getHabbo());
         client.getHabbo().getInventory().addMarketplaceOffer(offer);
         client.getHabbo().getInventory().getItemsComponent().removeHabboItem(event.item);
         item.setUserId(-1);
