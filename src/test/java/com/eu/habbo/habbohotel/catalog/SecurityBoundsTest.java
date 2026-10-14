@@ -19,7 +19,8 @@ class SecurityBoundsTest {
     @Test
     void marketplaceCommissionCannotOverflowSignedInteger() {
         assertTrue(MarketPlace.isValidListingPrice(MarketPlace.MAX_LISTING_PRICE));
-        assertEquals(2_020_000_000, MarketPlace.calculateCommision(MarketPlace.MAX_LISTING_PRICE));
+        assertEquals(MarketPlace.MAX_LISTING_PRICE, MarketPlace.calculateCommision(MarketPlace.MAX_LISTING_PRICE));
+        assertEquals(1234, MarketPlace.calculateCommision(1234));
 
         assertFalse(MarketPlace.isValidListingPrice(Integer.MAX_VALUE));
         assertEquals(0, MarketPlace.calculateCommision(Integer.MAX_VALUE));
