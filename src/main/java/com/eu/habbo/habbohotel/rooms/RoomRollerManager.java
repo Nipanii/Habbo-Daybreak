@@ -93,6 +93,11 @@ public class RoomRollerManager {
             return;
         }
 
+        // Stacked rollers: only the topmost one on a tile moves anything.
+        if (InteractionRoller.topRoller(this.room.getItemsAt(rollerTile)) != roller) {
+            return;
+        }
+
         THashSet<HabboItem> itemsOnRoller = new THashSet<>();
         for (HabboItem item : this.room.getItemsAt(rollerTile)) {
             if (item.getZ() >= roller.getZ() + Item.getCurrentHeight(roller)) {
@@ -128,6 +133,12 @@ public class RoomRollerManager {
         THashSet<HabboItem> itemsNewTile = new THashSet<>();
         itemsNewTile.addAll(this.room.getItemsAt(tileInFront));
         itemsNewTile.removeAll(itemsOnRoller);
+
+        // Only the topmost roller in front counts; what it stands on (a rug, lower rollers) is ignored.
+        HabboItem frontRoller = InteractionRoller.topRoller(itemsNewTile);
+        if (frontRoller != null) {
+            itemsNewTile.removeIf(item -> item != frontRoller && item.getZ() < frontRoller.getZ());
+        }
 
         List<HabboItem> toRemove = new ArrayList<>();
         for (HabboItem item : itemsOnRoller) {
@@ -175,7 +186,7 @@ public class RoomRollerManager {
                 return;
             }
         } else {
-            zOffset = -Item.getCurrentHeight(roller) + tileInFront.getStackHeight() - rollerTile.z;
+            zOffset = -Item.getCurrentHeight(roller) + tileInFront.getStackHeight() - roller.getZ();
         }
 
         // Process units on roller

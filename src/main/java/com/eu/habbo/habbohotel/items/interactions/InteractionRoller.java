@@ -3,16 +3,13 @@ package com.eu.habbo.habbohotel.items.interactions;
 import com.eu.habbo.habbohotel.gameclients.GameClient;
 import com.eu.habbo.habbohotel.items.Item;
 import com.eu.habbo.habbohotel.rooms.Room;
-import com.eu.habbo.habbohotel.rooms.RoomTile;
 import com.eu.habbo.habbohotel.rooms.RoomUnit;
 import com.eu.habbo.habbohotel.users.HabboItem;
 import com.eu.habbo.messages.ServerMessage;
-import gnu.trove.set.hash.THashSet;
-import org.apache.commons.math3.util.Pair;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.util.List;
+import java.util.Collection;
 
 public class InteractionRoller extends HabboItem {
     public static boolean NO_RULES = false;
@@ -67,21 +64,18 @@ public class InteractionRoller extends HabboItem {
     }
 
 
-    @Override
-    public boolean canStackAt(Room room, List<Pair<RoomTile, THashSet<HabboItem>>> itemsAtLocation) {
-        if (NO_RULES) return true;
-        if (itemsAtLocation.isEmpty()) return false;
-
-        for (Pair<RoomTile, THashSet<HabboItem>> set : itemsAtLocation) {
-            if (set.getValue() != null && !set.getValue().isEmpty()) {
-                if (set.getValue().size() > 1) {
-                    return false;
-                } else if (!set.getValue().contains(this)) {
-                    return false;
-                }
+    /**
+     * Rollers may be placed on top of anything, including other rollers. When several rollers share a tile,
+     * only the topmost one works: this returns it (highest z, then highest id), or null if there is none.
+     */
+    public static InteractionRoller topRoller(Collection<HabboItem> tileItems) {
+        InteractionRoller top = null;
+        for (HabboItem item : tileItems) {
+            if (!(item instanceof InteractionRoller)) continue;
+            if (top == null || item.getZ() > top.getZ() || (item.getZ() == top.getZ() && item.getId() > top.getId())) {
+                top = (InteractionRoller) item;
             }
         }
-
-        return true;
+        return top;
     }
 }
